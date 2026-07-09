@@ -1,0 +1,22 @@
+# Virtual environments
+venv/
+env/
+.venv/
+mj_env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Generated outputs
+*.png
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
