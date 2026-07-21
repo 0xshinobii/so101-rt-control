@@ -6,11 +6,17 @@ that every later controller is measured against, so the control law is kept
 deliberately naive.
 
 Usage:
-    python run_baseline.py
+    python run_baseline.py                        # headless, saves plot only
+    python run_baseline.py --viewer                # live MuJoCo viewer, real time
+    python run_baseline.py --viewer --speed 0.25    # live viewer, quarter speed
 """
+import argparse
 import os
+import time
+
 import numpy as np
 import mujoco
+import mujoco.viewer
 import matplotlib
 matplotlib.use("Agg")  # headless: write the plot to a file, no display needed
 import matplotlib.pyplot as plt
@@ -39,7 +45,24 @@ def end_effector_target(model, data, q_des):
     return site_pos(model, data, "ee")
 
 
-def main():
+def draw_target_marker(viewer, pos):
+    """Show a fixed red sphere at the target end-effector position.
+
+    Uses the viewer's user_scn overlay so the target is visible without
+    adding anything to the physics model itself.
+    """
+    viewer.user_scn.ngeom = 1
+    mujoco.mjv_initGeom(
+        viewer.user_scn.geoms[0],
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=[0.03, 0, 0],
+        pos=pos,
+        mat=np.eye(3).flatten(),
+        rgba=[1.0, 0.0, 0.0, 0.8],
+    )
+
+
+def main(use_viewer=False, speed=1.0):
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)
     data = mujoco.MjData(model)
 
@@ -53,14 +76,42 @@ def main():
     steps = int(DURATION / dt)
 
     t_log, q_log, ee_log = [], [], []
-    for _ in range(steps):
-        q, qdot = data.qpos.copy(), data.qvel.copy()
-        data.ctrl[:] = controller(q, qdot, TARGET, dt)
-        mujoco.mj_step(model, data)
 
-        t_log.append(data.time)
-        q_log.append(q)
-        ee_log.append(site_pos(model, data, "ee"))
+    if use_viewer:
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            draw_target_marker(viewer, ee_target)
+            for _ in range(steps):
+                if not viewer.is_running():
+                    break
+                step_start = time.time()
+
+                q, qdot = data.qpos.copy(), data.qvel.copy()
+                data.ctrl[:] = controller(q, qdot, TARGET, dt)
+                mujoco.mj_step(model, data)
+
+                t_log.append(data.time)
+                q_log.append(q)
+                ee_log.append(site_pos(model, data, "ee"))
+
+                viewer.sync()
+                # pace to real time (scaled by `speed`) so the motion is watchable
+                remaining = dt / speed - (time.time() - step_start)
+                if remaining > 0:
+                    time.sleep(remaining)
+
+            # hold the final pose on screen until the user closes the window
+            while viewer.is_running():
+                viewer.sync()
+                time.sleep(0.02)
+    else:
+        for _ in range(steps):
+            q, qdot = data.qpos.copy(), data.qvel.copy()
+            data.ctrl[:] = controller(q, qdot, TARGET, dt)
+            mujoco.mj_step(model, data)
+
+            t_log.append(data.time)
+            q_log.append(q)
+            ee_log.append(site_pos(model, data, "ee"))
 
     q_log = np.array(q_log)
     ee_log = np.array(ee_log)
@@ -86,4 +137,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--viewer", action="store_true",
+        help="open a live MuJoCo viewer and watch the arm move in real time",
+    )
+    parser.add_argument(
+        "--speed", type=float, default=1.0,
+        help="viewer playback speed multiplier, e.g. 0.25 for slow motion (default: 1.0)",
+    )
+    args = parser.parse_args()
+    main(use_viewer=args.viewer, speed=args.speed)
