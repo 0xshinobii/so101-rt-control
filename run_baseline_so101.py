@@ -47,6 +47,7 @@ KP = np.array([40.0, 40.0, 25.0, 15.0, 8.0, 5.0])
 KD = np.array([3.0, 3.0, 2.0, 1.0, 0.6, 0.4])
 
 DURATION = 4.0                    # seconds of simulation
+SETTLE_T = 1.0                    # arm is settled after this; steady-state window is t > SETTLE_T
 
 
 def site_pos(model, data, name):
@@ -140,18 +141,32 @@ def main(use_viewer=False, speed=1.0):
     ee_log = np.array(ee_log)
 
     # --- metrics ---
-    # Report the 5 arm joints separately from the held gripper joint: gripper
-    # RMS is noise, not tracking performance.
-    joint_rms = rms_error(q_log, TARGET)
-    arm_rms = joint_rms[:N_ARM]
-    miss = np.linalg.norm(ee_log[-1] - ee_target)  # final Cartesian miss (Delta)
+    # The primary number is the STEADY-STATE gravity droop -- that is what the
+    # later model-based phases (computed-torque, estimator, SMC) actually remove.
+    # A step-to-setpoint RMS over the whole window is dominated by the ~0.5 s rise
+    # (i.e. how far each joint travelled), not by the droop, so it is demoted to a
+    # secondary "did it reach the setpoint" check. The held gripper is reported
+    # apart: its motion is coupling noise, not tracking.
+    t_log = np.array(t_log)
+    settled = t_log > SETTLE_T
 
-    print("Joint RMS error [rad]:")
-    for name, e in zip(JOINT_NAMES[:N_ARM], arm_rms):
+    all_rms = rms_error(q_log, TARGET)                       # per-joint, full window
+    full_rms = all_rms[:N_ARM]                               # transit check
+    ss_rms = rms_error(q_log[settled], TARGET)[:N_ARM]       # steady-state droop
+    final_offset = TARGET[:N_ARM] - q_log[-1, :N_ARM]        # signed final error (sag)
+    miss = np.linalg.norm(ee_log[-1] - ee_target)           # final Cartesian miss (Delta)
+
+    print(f"Steady-state droop  [primary, RMS over t > {SETTLE_T:g}s]:")
+    for name, ss, fo in zip(JOINT_NAMES[:N_ARM], ss_rms, final_offset):
+        print(f"  {name:13s} rms={ss:.4f} rad   final_offset={fo:+.4f} rad")
+    print(f"  arm mean        rms={ss_rms.mean():.4f} rad")
+    print(f"End-effector miss   [primary, Cartesian]: {miss:.4f} m")
+    print()
+    print("Full-window RMS     [secondary, transit / reached-setpoint check] [rad]:")
+    for name, e in zip(JOINT_NAMES[:N_ARM], full_rms):
         print(f"  {name:13s} {e:.4f}")
-    print(f"  arm mean       {arm_rms.mean():.4f}")
-    print(f"  (gripper, held) {joint_rms[N_ARM]:.4f}")
-    print(f"End-effector miss [m]: {miss:.4f}")
+    print(f"  arm mean       {full_rms.mean():.4f}")
+    print(f"  (gripper, held) {all_rms[N_ARM]:.4f}")
 
     # --- plot commanded vs actual per joint ---
     fig, axes = plt.subplots(3, 2, figsize=(11, 8), sharex=True)
@@ -159,6 +174,9 @@ def main(use_viewer=False, speed=1.0):
     for i, ax in enumerate(axes):
         ax.plot(t_log, q_log[:, i], label="actual")
         ax.axhline(TARGET[i], ls="--", color="k", label="commanded")
+        # shade the steady-state window used for the droop metric
+        ax.axvspan(SETTLE_T, DURATION, color="0.85", alpha=0.5, lw=0,
+                   label=f"steady-state (t>{SETTLE_T:g}s)")
         label = JOINT_NAMES[i] + (" (held)" if i >= N_ARM else "")
         ax.set_ylabel(f"{label} [rad]")
         ax.legend(loc="best", fontsize=8)
