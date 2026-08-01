@@ -1,0 +1,63 @@
+#include "arm_control/mujoco_backend.hpp"
+
+#include <mujoco/mujoco.h>
+
+#include <stdexcept>
+
+namespace arm_control {
+
+MujocoBackend::MujocoBackend(const std::string& xml_path,
+                             const std::string& ee_site,
+                             const std::string& keyframe) {
+  char error[1000] = "";
+  m_ = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
+  if (!m_) {
+    throw std::runtime_error("mj_loadXML failed for '" + xml_path +
+                             "': " + error);
+  }
+  d_ = mj_makeData(m_);
+
+  ee_site_id_ = mj_name2id(m_, mjOBJ_SITE, ee_site.c_str());
+  if (ee_site_id_ < 0) {
+    throw std::runtime_error("EE site not found: " + ee_site);
+  }
+  home_id_ = mj_name2id(m_, mjOBJ_KEY, keyframe.c_str());
+  if (home_id_ < 0) {
+    throw std::runtime_error("keyframe not found: " + keyframe);
+  }
+
+  reset();
+}
+
+MujocoBackend::~MujocoBackend() {
+  if (d_) mj_deleteData(d_);
+  if (m_) mj_deleteModel(m_);
+}
+
+void MujocoBackend::read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) {
+  for (int i = 0; i < m_->nq; ++i) q[i] = d_->qpos[i];
+  for (int i = 0; i < m_->nv; ++i) qdot[i] = d_->qvel[i];
+}
+
+void MujocoBackend::apply_torque(const Eigen::VectorXd& tau) {
+  for (int i = 0; i < m_->nu; ++i) d_->ctrl[i] = tau[i];
+}
+
+void MujocoBackend::step() { mj_step(m_, d_); }
+
+Eigen::Vector3d MujocoBackend::ee_position() {
+  const mjtNum* p = &d_->site_xpos[3 * ee_site_id_];
+  return Eigen::Vector3d(p[0], p[1], p[2]);
+}
+
+void MujocoBackend::reset() {
+  // Start from the home keyframe (a keyframe alone does not change mj_resetData).
+  mj_resetDataKeyframe(m_, d_, home_id_);
+  mj_forward(m_, d_);  // populate site_xpos etc. for a valid pre-loop read
+}
+
+int MujocoBackend::dof() const { return m_->nu; }
+double MujocoBackend::timestep() const { return m_->opt.timestep; }
+double MujocoBackend::time() const { return d_->time; }
+
+}  // namespace arm_control

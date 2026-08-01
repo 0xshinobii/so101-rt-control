@@ -1,0 +1,9 @@
+arm_control_node:
+  ros__parameters:
+    # Path is resolved inside the container (repo bind-mounted at /work).
+    model_path: "/work/models/so101/scene_torque.xml"
+    rate_hz: 200.0
+    # Naive PD gains and target -- identical to the Phase 1.5 oracle.
+    kp: [40.0, 40.0, 25.0, 15.0, 8.0, 5.0]
+    kd: [3.0, 3.0, 2.0, 1.0, 0.6, 0.4]
+    target: [0.6, 0.7, -0.8, 0.5, 0.4, 0.0]

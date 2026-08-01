@@ -86,7 +86,7 @@ def draw_target_marker(viewer, pos):
     )
 
 
-def main(use_viewer=False, speed=1.0):
+def main(use_viewer=False, speed=1.0, csv_path=None):
     model = mujoco.MjModel.from_xml_path(MODEL_PATH)
     data = mujoco.MjData(model)
     home_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
@@ -99,7 +99,7 @@ def main(use_viewer=False, speed=1.0):
     dt = model.opt.timestep
     steps = int(DURATION / dt)
 
-    t_log, q_log, ee_log = [], [], []
+    t_log, q_log, qd_log, tau_log, ee_log = [], [], [], [], []
 
     if use_viewer:
         with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -110,11 +110,14 @@ def main(use_viewer=False, speed=1.0):
                 step_start = time.time()
 
                 q, qdot = data.qpos.copy(), data.qvel.copy()
-                data.ctrl[:] = controller(q, qdot, TARGET, dt)
+                tau = controller(q, qdot, TARGET, dt)
+                data.ctrl[:] = tau
                 mujoco.mj_step(model, data)
 
                 t_log.append(data.time)
                 q_log.append(q)
+                qd_log.append(qdot)
+                tau_log.append(tau.copy())
                 ee_log.append(site_pos(model, data, EE_SITE))
 
                 viewer.sync()
@@ -130,15 +133,40 @@ def main(use_viewer=False, speed=1.0):
     else:
         for _ in range(steps):
             q, qdot = data.qpos.copy(), data.qvel.copy()
-            data.ctrl[:] = controller(q, qdot, TARGET, dt)
+            tau = controller(q, qdot, TARGET, dt)
+            data.ctrl[:] = tau
             mujoco.mj_step(model, data)
 
             t_log.append(data.time)
             q_log.append(q)
+            qd_log.append(qdot)
+            tau_log.append(tau.copy())
             ee_log.append(site_pos(model, data, EE_SITE))
 
     q_log = np.array(q_log)
     ee_log = np.array(ee_log)
+
+    # Optional trajectory dump -- the oracle CSV that the C++ port is validated
+    # against (tools/arm_bench.py). Column layout matches the C++ writer exactly:
+    # t, q0..q5, qd0..qd5, tau0..tau5, ee_x, ee_y, ee_z. ee_target rides in a
+    # header comment so the bench can compute the Cartesian miss.
+    if csv_path:
+        qd_arr = np.array(qd_log)
+        tau_arr = np.array(tau_log)
+        header_cols = (["t"]
+                       + [f"q{i}" for i in range(model.nu)]
+                       + [f"qd{i}" for i in range(model.nu)]
+                       + [f"tau{i}" for i in range(model.nu)]
+                       + ["ee_x", "ee_y", "ee_z"])
+        rows = np.column_stack(
+            [np.array(t_log), q_log, qd_arr, tau_arr, ee_log])
+        with open(csv_path, "w") as f:
+            f.write("# ee_target="
+                    f"{float(ee_target[0])!r},{float(ee_target[1])!r},{float(ee_target[2])!r}\n")
+            f.write(",".join(header_cols) + "\n")
+            for row in rows:
+                f.write(",".join(repr(float(v)) for v in row) + "\n")
+        print(f"Saved oracle trajectory -> {csv_path}")
 
     # --- metrics ---
     # The primary number is the STEADY-STATE gravity droop -- that is what the
@@ -198,5 +226,9 @@ if __name__ == "__main__":
         "--speed", type=float, default=1.0,
         help="viewer playback speed multiplier, e.g. 0.25 for slow motion (default: 1.0)",
     )
+    parser.add_argument(
+        "--csv", type=str, default=None, metavar="PATH",
+        help="dump the trajectory to PATH as the oracle reference for arm_bench",
+    )
     args = parser.parse_args()
-    main(use_viewer=args.viewer, speed=args.speed)
+    main(use_viewer=args.viewer, speed=args.speed, csv_path=args.csv)
