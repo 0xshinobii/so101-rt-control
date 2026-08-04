@@ -21,6 +21,11 @@ public:
   // Reset plant to home and clear controller state.
   void reset();
 
+  // Update the desired joint trajectory state without reallocating.
+  void set_reference(const Eigen::VectorXd& q_des,
+                     const Eigen::VectorXd& qdot_des,
+                     const Eigen::VectorXd& qddot_des);
+
   // One control iteration. RT-clean: no heap allocation, no I/O. Fills `out`
   // with the pre-step state, the applied torque, and the post-step t/ee.
   void step_once(Sample& out);
@@ -32,6 +37,8 @@ private:
   PlantInterface& plant_;
   Controller& controller_;
   Eigen::VectorXd q_des_;
+  Eigen::VectorXd qdot_des_;
+  Eigen::VectorXd qddot_des_;
   Eigen::VectorXd q_;
   Eigen::VectorXd qdot_;
   Eigen::VectorXd tau_;

@@ -28,8 +28,8 @@ SO-101 per-arm-joint steady-state droop (`t > 1 s`):
 The droop concentrates on the gravity-loaded joints (`shoulder_lift`,
 `elbow_flex`, `wrist_flex`); `shoulder_pan` / `wrist_roll` have near-vertical
 axes (~0 gravity torque) so they show essentially no droop. This is the number
-Phase 3 (payload) will degrade and Phases 4-6 (computed-torque / estimator /
-SMC) will recover.
+Phase 4's known payload degrades this baseline and computed torque recovers it;
+Phase 5 will repeat the loaded case without giving the payload to the model.
 
 ## Secondary metric (transit / "did it reach the setpoint" check)
 
@@ -49,6 +49,55 @@ Full-window joint RMS [rad] -- transient-dominated, not the droop story:
 - SO-101 motors use the real STS3215 torque envelope (+/-2.94 N.m); it was not
   widened to make PD work. Gravity torques on this light arm are modest
   (`shoulder_lift` ~0.8 N.m at the target pose), so the empty-arm droop is small
-  by design -- the compelling contrast comes in Phase 3 under payload.
+  by design.
 - Plots (`baseline_tracking.png`, `baseline_so101_tracking.png`) are gitignored;
   regenerate with the scripts above.
+
+## Phase 4 — Pinocchio computed torque
+
+Phase 4 uses the same 1.0 s minimum-jerk reference for PD and computed torque.
+The settled window begins at 1.5 s. Computed torque uses acceleration-domain
+gains `Kp=400 s^-2`, `Kd=40 s^-1` (critically damped, natural frequency
+20 rad/s), with the real +/-2.94 N.m actuator limit unchanged.
+
+Rigid-body equivalence is a blocking test before controller execution:
+
+- Empty and known-payload pairs both pass gravity, nonlinear-bias, and full
+  mass-matrix comparisons at five poses and two nonzero velocity vectors.
+- Worst empty-model differences: gravity `5.55e-16 N.m`, nonlinear bias
+  `8.66e-13 N.m`, mass matrix `5.64e-12` absolute.
+- Worst known-payload differences: gravity `1.33e-15 N.m`, nonlinear bias
+  `8.66e-13 N.m`, mass matrix `5.64e-12` absolute.
+- The 0.20 kg known payload reaches `1.546 N.m` worst holding torque in the
+  gate pose set: 52.6% of the actuator limit, leaving transient headroom.
+
+Empty-arm result:
+
+- PD settled arm-mean RMS: `0.009959 rad`; computed torque: `0.002933 rad`
+  (70.5% reduction).
+- PD end-effector miss: `0.014012 m`; computed torque: `0.000327 m`
+  (97.7% reduction).
+- Computed torque settles inside 0.01 rad by 1.225 s, with zero saturated
+  samples and `1.360 N.m` peak torque.
+
+Known-payload result (the same payload is present in MuJoCo and Pinocchio):
+
+- PD settled arm-mean RMS: `0.021612 rad`; computed torque: `0.002840 rad`
+  (86.9% reduction).
+- PD end-effector miss: `0.029999 m`; computed torque: `0.000184 m`
+  (99.4% reduction).
+- The payload more than doubles PD's Cartesian miss, while computed torque
+  returns to the Coulomb-friction floor. It settles inside 0.01 rad by 1.235 s,
+  with zero saturated samples and `1.923 N.m` peak torque.
+
+The structural result is gravity cancellation, not a gain bake-off: plain PD
+must retain position error to generate holding torque, while computed torque
+provides the modeled gravity torque at zero error. Remaining steady-state error
+is the MuJoCo `frictionloss` deadband; damping and armature affect only the
+transient. Transient metrics are still reported by `tools/phase4_bench.py`, but
+they are supporting evidence because the two controllers use different-domain
+gains.
+
+This is a perfect-knowledge result. The known-payload computed-torque case is
+Phase 5's upper bound; an unknown payload omitted from Pinocchio should first
+degrade tracking, then an online estimator should recover toward this result.

@@ -29,3 +29,6 @@ ros2_ws/log/
 .DS_Store
 .idea/
 .vscode/
+
+# Cursor
+.cursor/implementation-plan.md

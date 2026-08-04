@@ -1,7 +1,5 @@
-# Phase 2 dev/deploy image: ROS 2 Jazzy (Ubuntu 24.04) + Eigen + the MuJoCo C
-# library, pinned to 3.10.0 to match the Python wheel used by the Phase 1.5
-# oracle. Same-engine + same-inputs is what makes the delta~0 validation mean
-# something. This is also the Linux base Phase 3's RT work will build on.
+# Development image: ROS 2 Jazzy + Eigen + Pinocchio + the MuJoCo C library,
+# pinned to 3.10.0 to match the Python wheel used by the Phase 1.5 oracle.
 FROM ros:jazzy-ros-base
 
 ARG MUJOCO_VERSION=3.10.0
@@ -17,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       wget \
       ca-certificates \
       libeigen3-dev \
+      ros-jazzy-pinocchio \
       python3-colcon-common-extensions \
       python3-numpy \
  && rm -rf /var/lib/apt/lists/*
@@ -30,7 +29,7 @@ RUN mkdir -p /opt/mujoco \
 
 # Let CMake find MuJoCo and the runtime linker load libmujoco.so.
 ENV MUJOCO_DIR=/opt/mujoco
-ENV LD_LIBRARY_PATH=/opt/mujoco/lib:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/opt/mujoco/lib
 
 WORKDIR /work
 CMD ["/bin/bash"]

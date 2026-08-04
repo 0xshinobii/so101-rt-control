@@ -7,6 +7,8 @@ ControlLoop::ControlLoop(PlantInterface& plant, Controller& controller,
     : plant_(plant),
       controller_(controller),
       q_des_(std::move(q_des)),
+      qdot_des_(Eigen::VectorXd::Zero(plant.dof())),
+      qddot_des_(Eigen::VectorXd::Zero(plant.dof())),
       q_(Eigen::VectorXd::Zero(plant.dof())),
       qdot_(Eigen::VectorXd::Zero(plant.dof())),
       tau_(Eigen::VectorXd::Zero(plant.dof())) {}
@@ -16,10 +18,18 @@ void ControlLoop::reset() {
   controller_.reset();
 }
 
+void ControlLoop::set_reference(const Eigen::VectorXd& q_des,
+                                const Eigen::VectorXd& qdot_des,
+                                const Eigen::VectorXd& qddot_des) {
+  q_des_ = q_des;
+  qdot_des_ = qdot_des;
+  qddot_des_ = qddot_des;
+}
+
 void ControlLoop::step_once(Sample& out) {
   // PRE-step read: q, qdot -> the torque is computed from these.
   plant_.read_state(q_, qdot_);
-  controller_.compute(q_, qdot_, q_des_, tau_);
+  controller_.compute(q_, qdot_, q_des_, qdot_des_, qddot_des_, tau_);
   plant_.apply_torque(tau_);
 
   // Advance the sim by one control period.

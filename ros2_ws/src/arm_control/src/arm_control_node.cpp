@@ -4,8 +4,10 @@
 // and publishes JointState + ArmMetrics. rclcpp::spin never touches the hot path
 // -- exactly the isolation Phase 3's RT thread needs.
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,7 +17,9 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include "arm_control/arm_types.hpp"
+#include "arm_control/computed_torque_controller.hpp"
 #include "arm_control/control_loop.hpp"
+#include "arm_control/controller.hpp"
 #include "arm_control/mujoco_backend.hpp"
 #include "arm_control/pd_controller.hpp"
 #include "arm_control/spsc_ring.hpp"
@@ -28,11 +32,27 @@ const std::vector<std::string> kJointNames = {
     "shoulder_pan", "shoulder_lift", "elbow_flex",
     "wrist_flex",   "wrist_roll",    "gripper"};
 constexpr int kArmJoints = 5;  // first 5 are the arm; index 5 is the held gripper
+constexpr double kReferenceDuration = 1.0;
 
 Eigen::VectorXd to_eigen(const std::vector<double>& v) {
   Eigen::VectorXd e(v.size());
   for (size_t i = 0; i < v.size(); ++i) e[i] = v[i];
   return e;
+}
+
+void minimum_jerk_reference(double time, const Eigen::VectorXd& target,
+                            Eigen::VectorXd& q, Eigen::VectorXd& qdot,
+                            Eigen::VectorXd& qddot) {
+  const double s = std::clamp(time / kReferenceDuration, 0.0, 1.0);
+  const double s2 = s * s;
+  const double s3 = s2 * s;
+  const double s4 = s3 * s;
+  const double s5 = s4 * s;
+  q = (10.0 * s3 - 15.0 * s4 + 6.0 * s5) * target;
+  qdot = (30.0 * s2 - 60.0 * s3 + 30.0 * s4) * target /
+         kReferenceDuration;
+  qddot = (60.0 * s - 180.0 * s2 + 120.0 * s3) * target /
+          (kReferenceDuration * kReferenceDuration);
 }
 }  // namespace
 
@@ -42,19 +62,45 @@ public:
     // --- parameters (gains / target / model / rate) ---
     const std::string model_path = declare_parameter<std::string>(
         "model_path", "models/so101/scene_torque.xml");
+    const std::string controller_type =
+        declare_parameter<std::string>("controller_type", "pd");
+    const std::string urdf_path = declare_parameter<std::string>(
+        "urdf_path", "models/so101/so101_dynamics.urdf");
+    reference_type_ =
+        declare_parameter<std::string>("reference_type", "smooth");
     rate_hz_ = declare_parameter<double>("rate_hz", 200.0);
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
     const auto kd = declare_parameter<std::vector<double>>(
         "kd", {3.0, 3.0, 2.0, 1.0, 0.6, 0.4});
+    const auto computed_kp = declare_parameter<std::vector<double>>(
+        "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
+    const auto computed_kd = declare_parameter<std::vector<double>>(
+        "computed_kd", {40.0, 40.0, 40.0, 40.0, 40.0, 40.0});
     target_ = declare_parameter<std::vector<double>>(
         "target", {0.6, 0.7, -0.8, 0.5, 0.4, 0.0});
+    if (reference_type_ != "step" && reference_type_ != "smooth") {
+      throw std::invalid_argument("reference_type must be step or smooth");
+    }
+    target_eigen_ = to_eigen(target_);
+    q_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
+    qdot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
+    qddot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
 
     // --- build the control core ---
     plant_ = std::make_unique<arm_control::MujocoBackend>(model_path);
-    controller_ = std::make_unique<arm_control::PdController>(to_eigen(kp), to_eigen(kd));
+    if (controller_type == "pd") {
+      controller_ =
+          std::make_unique<arm_control::PdController>(to_eigen(kp), to_eigen(kd));
+    } else if (controller_type == "computed_torque") {
+      controller_ = std::make_unique<arm_control::ComputedTorqueController>(
+          urdf_path, to_eigen(computed_kp), to_eigen(computed_kd));
+    } else {
+      throw std::invalid_argument(
+          "controller_type must be pd or computed_torque");
+    }
     loop_ = std::make_unique<arm_control::ControlLoop>(*plant_, *controller_,
-                                                       to_eigen(target_));
+                                                       target_eigen_);
     loop_->reset();
 
     // --- publishers (non-RT side) ---
@@ -67,8 +113,9 @@ public:
     // --- start the control thread (this is the fixed-rate loop) ---
     control_thread_ = std::thread([this]() { control_loop(); });
 
-    RCLCPP_INFO(get_logger(), "arm_control_node up: model=%s rate=%.0f Hz",
-                model_path.c_str(), rate_hz_);
+    RCLCPP_INFO(get_logger(),
+                "arm_control_node up: model=%s controller=%s rate=%.0f Hz",
+                model_path.c_str(), controller_type.c_str(), rate_hz_);
   }
 
   ~ArmControlNode() override {
@@ -83,6 +130,11 @@ private:
     auto next = std::chrono::steady_clock::now();
     arm_control::Sample s;  // reused; no per-iteration allocation
     while (running_.load(std::memory_order_acquire)) {
+      if (reference_type_ == "smooth") {
+        minimum_jerk_reference(plant_->time(), target_eigen_, q_ref_,
+                               qdot_ref_, qddot_ref_);
+        loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
+      }
       loop_->step_once(s);
       ring_.push(s);  // best-effort; never blocks the control thread
       next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
@@ -124,9 +176,14 @@ private:
 
   // Control core.
   std::unique_ptr<arm_control::MujocoBackend> plant_;
-  std::unique_ptr<arm_control::PdController> controller_;
+  std::unique_ptr<arm_control::Controller> controller_;
   std::unique_ptr<arm_control::ControlLoop> loop_;
   std::vector<double> target_;
+  std::string reference_type_;
+  Eigen::VectorXd target_eigen_;
+  Eigen::VectorXd q_ref_;
+  Eigen::VectorXd qdot_ref_;
+  Eigen::VectorXd qddot_ref_;
   double rate_hz_ = 200.0;
 
   // RT <-> non-RT handoff.

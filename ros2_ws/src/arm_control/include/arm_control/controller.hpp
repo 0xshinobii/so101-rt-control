@@ -14,6 +14,8 @@ public:
   // and pre-sized, so a correct implementation allocates nothing here.
   virtual void compute(const Eigen::VectorXd& q, const Eigen::VectorXd& qdot,
                        const Eigen::VectorXd& q_des,
+                       const Eigen::VectorXd& qdot_des,
+                       const Eigen::VectorXd& qddot_des,
                        Eigen::VectorXd& tau_out) = 0;
 
   // Clear any internal state (e.g. an integral accumulator) between runs.

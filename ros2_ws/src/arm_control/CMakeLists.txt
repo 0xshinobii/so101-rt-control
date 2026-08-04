@@ -15,18 +15,31 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Mujoco REQUIRED)
+find_package(pinocchio REQUIRED)
 
 # --- Control core: backend + controller + loop (no ROS, no I/O) ---------------
 add_library(arm_core
   src/mujoco_backend.cpp
+  src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
+  src/computed_torque_controller.cpp
   src/control_loop.cpp
 )
 target_include_directories(arm_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(arm_core PUBLIC mujoco::mujoco Eigen3::Eigen)
+target_link_libraries(arm_core PUBLIC
+  mujoco::mujoco
+  Eigen3::Eigen
+  pinocchio::pinocchio
+)
+
+# Gate controller integration on equivalence of the MuJoCo and Pinocchio
+# rigid-body terms (gravity, mass matrix, and nonlinear bias).
+add_executable(validate_dynamics src/validate_dynamics.cpp)
+target_link_libraries(validate_dynamics arm_core)
+install(TARGETS validate_dynamics DESTINATION lib/${PROJECT_NAME})
 
 # --- Steps 1-3: headless runner (bare executable, no ROS dependency) ----------
 add_executable(main_headless src/main_headless.cpp)
