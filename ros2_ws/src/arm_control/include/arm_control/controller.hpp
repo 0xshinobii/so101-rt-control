@@ -2,6 +2,8 @@
 // computed-torque / EKF+SMC later. Always outputs torque, so it is 100%
 // backend-agnostic (see PlantInterface).
 #pragma once
+#include <limits>
+
 #include <Eigen/Dense>
 
 namespace arm_control {
@@ -20,6 +22,11 @@ public:
 
   // Clear any internal state (e.g. an integral accumulator) between runs.
   virtual void reset() = 0;
+
+  // Optional fixed-size telemetry. Non-estimating controllers retain NaN.
+  virtual double estimated_payload_mass() const {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
 };
 
 }  // namespace arm_control

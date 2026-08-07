@@ -29,7 +29,7 @@ The droop concentrates on the gravity-loaded joints (`shoulder_lift`,
 `elbow_flex`, `wrist_flex`); `shoulder_pan` / `wrist_roll` have near-vertical
 axes (~0 gravity torque) so they show essentially no droop. This is the number
 Phase 4's known payload degrades this baseline and computed torque recovers it;
-Phase 5 will repeat the loaded case without giving the payload to the model.
+Phase 5 repeats the loaded case without giving the payload mass to the model.
 
 ## Secondary metric (transit / "did it reach the setpoint" check)
 
@@ -99,5 +99,60 @@ they are supporting evidence because the two controllers use different-domain
 gains.
 
 This is a perfect-knowledge result. The known-payload computed-torque case is
-Phase 5's upper bound; an unknown payload omitted from Pinocchio should first
-degrade tracking, then an online estimator should recover toward this result.
+Phase 5's upper bound. The runs below omit the payload from Pinocchio, show the
+resulting degradation, then recover toward this result with online estimation.
+
+## Phase 5 — Online payload-mass estimation
+
+Phase 5 keeps the payload's attachment pose and inertia shape as a known
+template but treats its scalar mass as unknown. A real-time scalar RLS
+estimator uses the exact per-kilogram inverse-dynamics regressor
+`(ID_0.20kg - ID_empty) / 0.20`. Constant-mass runs use plain RLS
+(`lambda = 1`).
+
+The regression is causally aligned: torque `tau[k-1]` is paired with
+`qdd_meas[k-1] = (qdot[k] - qdot[k-1]) / dt`, evaluated at the stored
+`q[k-1], qdot[k-1]`. Estimation uses this raw measured acceleration; control
+uses the separate known acceleration command
+`qdd_des + Kp*error + Kd*error_rate`. A deterministic synthetic test detects
+an intentional one-sample skew.
+
+Tracking results on the same 1.0 s minimum-jerk reference:
+
+| Payload / controller model | Settled arm RMS [rad] | EE miss [m] | Peak torque [N.m] |
+|----------------------------|-----------------------|-------------|---------------------|
+| 0.10 kg / empty, no estimator | 0.008030 | 0.010438 | 1.640 |
+| 0.10 kg / empty + RLS | 0.002494 | 0.000877 | 1.637 |
+| 0.20 kg / empty, no estimator | 0.015351 | 0.020944 | 1.917 |
+| 0.20 kg / empty + RLS | 0.002545 | 0.000646 | 1.919 |
+| 0.20 kg / known-payload upper bound | 0.002840 | 0.000184 | 1.923 |
+
+At 0.20 kg, RLS recovers **102.36% of the steady-state RMS gap** and
+**97.77% of the Cartesian miss gap** toward the Phase 4 perfect-model bound.
+The RMS recovery slightly exceeds 100% because the remaining Coulomb-friction
+deadband differs between trajectories; it is not evidence that estimated
+dynamics are more accurate than perfect model knowledge. All adaptive runs
+have zero saturated samples and bounded final speed.
+
+Mass-identification diagnostics:
+
+| Plant mass [kg] | Raw final estimate [kg] | Empty-bias corrected [kg] | Corrected error [kg] | Convergence [s] |
+|-----------------|-------------------------|---------------------------|----------------------|-----------------|
+| 0.00 | -0.009628 | -- | -- | 2.395 |
+| 0.10 | 0.093058 | 0.102685 | 0.002685 | 2.735 |
+| 0.20 | 0.192716 | 0.202344 | 0.002344 | 1.995 |
+
+The negative empty-arm estimate is the measured friction/damping model-bias
+floor. The controller projects the mass used for compensation into the
+physical range, so it applies 0 kg compensation on the empty arm while
+retaining the signed raw estimate for diagnostics. Subtracting the empty-arm
+bias is approximate: friction is velocity-dependent, so common-mode
+cancellation relies on the matched reference and similar velocity profiles.
+The measured adaptive-to-empty velocity RMS differences are 0.003376 rad/s
+(0.10 kg) and 0.005475 rad/s (0.20 kg).
+
+The characterization's worst corrected mass error was 0.002685 kg. The
+automated gate is frozen at 0.0035 kg, approximately 30% margin, rather than
+being chosen before measurement. `tools/phase5_bench.py` also retains 50% gap
+recovery only as a bug-detection floor; the measured recovery above is the
+reported result.

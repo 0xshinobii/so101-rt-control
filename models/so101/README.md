@@ -40,6 +40,11 @@ The `*_payload` variants add the same known 0.20 kg, 0.04 x 0.04 x 0.08 m box
 to both engines. In MJCF it is a rigid jointless child at `gripperframe`, not a
 soft weld; in URDF it is an equivalent fixed-link inertia.
 
+Phase 5 treats that geometry and attachment pose as a known template while its
+scalar mass is unknown. The headless runner can scale the MJCF body's mass and
+principal inertia together with `--plant-payload-mass`; the 0.20 kg URDF remains
+the reference used to derive the exact per-kilogram inverse-dynamics regressor.
+
 ## License
 
 This model is released under the [Apache License 2.0](LICENSE).

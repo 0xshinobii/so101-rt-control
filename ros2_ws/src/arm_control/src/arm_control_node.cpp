@@ -16,6 +16,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
+#include "arm_control/adaptive_computed_torque_controller.hpp"
 #include "arm_control/arm_types.hpp"
 #include "arm_control/computed_torque_controller.hpp"
 #include "arm_control/control_loop.hpp"
@@ -66,6 +67,13 @@ public:
         declare_parameter<std::string>("controller_type", "pd");
     const std::string urdf_path = declare_parameter<std::string>(
         "urdf_path", "models/so101/so101_dynamics.urdf");
+    const std::string payload_urdf_path = declare_parameter<std::string>(
+        "payload_urdf_path",
+        "models/so101/so101_dynamics_payload.urdf");
+    const double reference_payload_mass =
+        declare_parameter<double>("reference_payload_mass", 0.20);
+    const double plant_payload_mass =
+        declare_parameter<double>("plant_payload_mass", -1.0);
     reference_type_ =
         declare_parameter<std::string>("reference_type", "smooth");
     rate_hz_ = declare_parameter<double>("rate_hz", 200.0);
@@ -77,6 +85,17 @@ public:
         "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
     const auto computed_kd = declare_parameter<std::vector<double>>(
         "computed_kd", {40.0, 40.0, 40.0, 40.0, 40.0, 40.0});
+    arm_control::PayloadMassRlsEstimator::Config estimator_config;
+    estimator_config.initial_mass =
+        declare_parameter<double>("rls_initial_mass", 0.0);
+    estimator_config.initial_covariance =
+        declare_parameter<double>("rls_initial_covariance", 100.0);
+    estimator_config.forgetting_factor =
+        declare_parameter<double>("rls_forgetting_factor", 1.0);
+    estimator_config.max_mass =
+        declare_parameter<double>("rls_max_mass", 0.5);
+    estimator_config.excitation_threshold =
+        declare_parameter<double>("rls_excitation_threshold", 1e-8);
     target_ = declare_parameter<std::vector<double>>(
         "target", {0.6, 0.7, -0.8, 0.5, 0.4, 0.0});
     if (reference_type_ != "step" && reference_type_ != "smooth") {
@@ -89,15 +108,25 @@ public:
 
     // --- build the control core ---
     plant_ = std::make_unique<arm_control::MujocoBackend>(model_path);
+    if (plant_payload_mass >= 0.0) {
+      plant_->set_body_mass("known_payload", plant_payload_mass);
+    }
     if (controller_type == "pd") {
       controller_ =
           std::make_unique<arm_control::PdController>(to_eigen(kp), to_eigen(kd));
     } else if (controller_type == "computed_torque") {
       controller_ = std::make_unique<arm_control::ComputedTorqueController>(
           urdf_path, to_eigen(computed_kp), to_eigen(computed_kd));
+    } else if (controller_type == "adaptive_computed_torque") {
+      controller_ =
+          std::make_unique<arm_control::AdaptiveComputedTorqueController>(
+              urdf_path, payload_urdf_path, reference_payload_mass,
+              to_eigen(computed_kp), to_eigen(computed_kd),
+              plant_->timestep(), estimator_config);
     } else {
       throw std::invalid_argument(
-          "controller_type must be pd or computed_torque");
+          "controller_type must be pd, computed_torque, or "
+          "adaptive_computed_torque");
     }
     loop_ = std::make_unique<arm_control::ControlLoop>(*plant_, *controller_,
                                                        target_eigen_);
@@ -171,6 +200,7 @@ private:
       if (i < kArmJoints) sumsq += err * err;
     }
     m.arm_rms_error = std::sqrt(sumsq / kArmJoints);
+    m.estimated_payload_mass = s.estimated_payload_mass;
     metrics_pub_->publish(m);
   }
 

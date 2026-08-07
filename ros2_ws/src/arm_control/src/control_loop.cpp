@@ -43,6 +43,7 @@ void ControlLoop::step_once(Sample& out) {
     out.qd[i] = qdot_[i];
     out.tau[i] = tau_[i];
   }
+  out.estimated_payload_mass = controller_.estimated_payload_mass();
   const Eigen::Vector3d ee = plant_.ee_position();
   out.ee[0] = ee.x();
   out.ee[1] = ee.y();

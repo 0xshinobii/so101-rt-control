@@ -30,6 +30,10 @@ public:
   Eigen::Vector3d ee_position() override;
   void reset() override;
 
+  // Simulation-only pre-run utility. Scales a fixed payload body's mass and
+  // principal inertia together, then refreshes MuJoCo's derived constants.
+  void set_body_mass(const std::string& body_name, double mass);
+
   int dof() const override;
   double timestep() const override;
   double time() const override;

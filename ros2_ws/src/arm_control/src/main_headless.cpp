@@ -5,9 +5,11 @@
 // The hot loop is RT-clean: samples are collected into a pre-reserved buffer
 // (no per-step allocation, no per-step I/O); the CSV is written once at the end.
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -15,6 +17,7 @@
 
 #include <Eigen/Dense>
 
+#include "arm_control/adaptive_computed_torque_controller.hpp"
 #include "arm_control/arm_types.hpp"
 #include "arm_control/computed_torque_controller.hpp"
 #include "arm_control/control_loop.hpp"
@@ -22,6 +25,7 @@
 #include "arm_control/mujoco_backend.hpp"
 #include "arm_control/pd_controller.hpp"
 
+using arm_control::AdaptiveComputedTorqueController;
 using arm_control::ComputedTorqueController;
 using arm_control::ControlLoop;
 using arm_control::Controller;
@@ -73,37 +77,62 @@ void minimum_jerk_reference(double time, Eigen::VectorXd& q,
 void write_csv(const std::string& path, const std::vector<Sample>& log,
                const std::string& controller_name,
                const std::string& reference_name,
-               const ComputedTorqueController* computed, double dt) {
+               const ComputedTorqueController* computed,
+               const AdaptiveComputedTorqueController* adaptive, double dt) {
   std::ofstream out(path);
   out.precision(17);  // full double precision -> the ~1e-6 trajectory diff is meaningful
   out << "# controller=" << controller_name << '\n';
   out << "# reference=" << reference_name << '\n';
+  const Eigen::VectorXd* raw_peak = nullptr;
+  const Eigen::VectorXd* applied_peak = nullptr;
+  std::size_t saturated_samples = 0;
   if (computed) {
+    raw_peak = &computed->raw_peak_torque();
+    applied_peak = &computed->applied_peak_torque();
+    saturated_samples = computed->saturated_samples();
+  } else if (adaptive) {
+    raw_peak = &adaptive->raw_peak_torque();
+    applied_peak = &adaptive->applied_peak_torque();
+    saturated_samples = adaptive->saturated_samples();
+  }
+  if (raw_peak) {
     out << "# raw_peak_tau=";
     for (int i = 0; i < kDof; ++i) {
       if (i) out << ',';
-      out << computed->raw_peak_torque()[i];
+      out << (*raw_peak)[i];
     }
     out << "\n# applied_peak_tau=";
     for (int i = 0; i < kDof; ++i) {
       if (i) out << ',';
-      out << computed->applied_peak_torque()[i];
+      out << (*applied_peak)[i];
     }
-    out << "\n# saturated_samples=" << computed->saturated_samples()
+    out << "\n# saturated_samples=" << saturated_samples
         << "\n# saturation_duration="
-        << computed->saturated_samples() * dt << '\n';
+        << saturated_samples * dt << '\n';
+  }
+  if (adaptive) {
+    out << "# final_payload_mass_estimate="
+        << adaptive->estimated_payload_mass()
+        << "\n# final_compensated_payload_mass="
+        << adaptive->compensated_payload_mass()
+        << "\n# estimator_updates=" << adaptive->estimator_updates()
+        << "\n# estimator_covariance=" << adaptive->estimator_covariance() << '\n';
   }
   out << "t";
   for (int i = 0; i < kDof; ++i) out << ",q" << i;
   for (int i = 0; i < kDof; ++i) out << ",qd" << i;
   for (int i = 0; i < kDof; ++i) out << ",tau" << i;
-  out << ",ee_x,ee_y,ee_z\n";
+  out << ",ee_x,ee_y,ee_z";
+  if (adaptive) out << ",estimated_payload_mass";
+  out << '\n';
   for (const auto& s : log) {
     out << s.t;
     for (int i = 0; i < kDof; ++i) out << ',' << s.q[i];
     for (int i = 0; i < kDof; ++i) out << ',' << s.qd[i];
     for (int i = 0; i < kDof; ++i) out << ',' << s.tau[i];
-    out << ',' << s.ee[0] << ',' << s.ee[1] << ',' << s.ee[2] << '\n';
+    out << ',' << s.ee[0] << ',' << s.ee[1] << ',' << s.ee[2];
+    if (adaptive) out << ',' << s.estimated_payload_mass;
+    out << '\n';
   }
 }
 
@@ -116,6 +145,11 @@ int main(int argc, char** argv) {
   std::string controller_name = "pd";
   std::string reference_name = "step";
   std::string urdf_path = "models/so101/so101_dynamics.urdf";
+  std::string payload_urdf_path =
+      "models/so101/so101_dynamics_payload.urdf";
+  double reference_payload_mass = 0.20;
+  double plant_payload_mass = std::numeric_limits<double>::quiet_NaN();
+  arm_control::PayloadMassRlsEstimator::Config estimator_config;
   for (int i = 3; i < argc; ++i) {
     const std::string option = argv[i];
     if (option == "--controller" && i + 1 < argc) {
@@ -124,6 +158,22 @@ int main(int argc, char** argv) {
       urdf_path = argv[++i];
     } else if (option == "--reference" && i + 1 < argc) {
       reference_name = argv[++i];
+    } else if (option == "--payload-urdf" && i + 1 < argc) {
+      payload_urdf_path = argv[++i];
+    } else if (option == "--reference-payload-mass" && i + 1 < argc) {
+      reference_payload_mass = std::stod(argv[++i]);
+    } else if (option == "--plant-payload-mass" && i + 1 < argc) {
+      plant_payload_mass = std::stod(argv[++i]);
+    } else if (option == "--rls-initial-mass" && i + 1 < argc) {
+      estimator_config.initial_mass = std::stod(argv[++i]);
+    } else if (option == "--rls-initial-covariance" && i + 1 < argc) {
+      estimator_config.initial_covariance = std::stod(argv[++i]);
+    } else if (option == "--rls-forgetting-factor" && i + 1 < argc) {
+      estimator_config.forgetting_factor = std::stod(argv[++i]);
+    } else if (option == "--rls-max-mass" && i + 1 < argc) {
+      estimator_config.max_mass = std::stod(argv[++i]);
+    } else if (option == "--rls-excitation-threshold" && i + 1 < argc) {
+      estimator_config.excitation_threshold = std::stod(argv[++i]);
     } else {
       throw std::invalid_argument("unknown/incomplete option: " + option);
     }
@@ -131,8 +181,12 @@ int main(int argc, char** argv) {
 
   try {
     MujocoBackend plant(model_path);
+    if (std::isfinite(plant_payload_mass)) {
+      plant.set_body_mass("known_payload", plant_payload_mass);
+    }
     std::unique_ptr<Controller> controller;
     ComputedTorqueController* computed = nullptr;
+    AdaptiveComputedTorqueController* adaptive = nullptr;
     if (controller_name == "pd") {
       controller = std::make_unique<PdController>(kKp, kKd);
     } else if (controller_name == "computed_torque") {
@@ -140,8 +194,16 @@ int main(int argc, char** argv) {
           urdf_path, kComputedKp, kComputedKd);
       computed = instance.get();
       controller = std::move(instance);
+    } else if (controller_name == "adaptive_computed_torque") {
+      auto instance = std::make_unique<AdaptiveComputedTorqueController>(
+          urdf_path, payload_urdf_path, reference_payload_mass, kComputedKp,
+          kComputedKd, plant.timestep(), estimator_config);
+      adaptive = instance.get();
+      controller = std::move(instance);
     } else {
-      throw std::invalid_argument("controller must be pd or computed_torque");
+      throw std::invalid_argument(
+          "controller must be pd, computed_torque, or "
+          "adaptive_computed_torque");
     }
     ControlLoop loop(plant, *controller, kTarget);
     if (reference_name != "step" && reference_name != "smooth") {
@@ -172,7 +234,8 @@ int main(int argc, char** argv) {
       loop.step_once(log[i]);
     }
 
-    write_csv(csv_path, log, controller_name, reference_name, computed, dt);
+    write_csv(csv_path, log, controller_name, reference_name, computed,
+              adaptive, dt);
     const Sample& last = log.back();
     std::printf("done. wrote %s (%d samples). final t=%.4f q0=%.6f ee=(%.4f,%.4f,%.4f)\n",
                 csv_path.c_str(), static_cast<int>(log.size()), last.t,
@@ -181,6 +244,15 @@ int main(int argc, char** argv) {
       std::printf("computed torque: saturated_samples=%zu/%zu (%.4f s)\n",
                   computed->saturated_samples(), computed->sample_count(),
                   computed->saturated_samples() * dt);
+    } else if (adaptive) {
+      std::printf(
+          "adaptive computed torque: raw_mass=%.6f kg compensated_mass=%.6f "
+          "kg updates=%zu "
+          "saturated_samples=%zu/%zu (%.4f s)\n",
+          adaptive->estimated_payload_mass(),
+          adaptive->compensated_payload_mass(), adaptive->estimator_updates(),
+          adaptive->saturated_samples(), adaptive->sample_count(),
+          adaptive->saturated_samples() * dt);
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

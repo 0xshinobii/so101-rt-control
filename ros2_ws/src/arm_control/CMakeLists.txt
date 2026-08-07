@@ -23,6 +23,8 @@ add_library(arm_core
   src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
   src/computed_torque_controller.cpp
+  src/payload_mass_rls.cpp
+  src/adaptive_computed_torque_controller.cpp
   src/control_loop.cpp
 )
 target_include_directories(arm_core PUBLIC
@@ -40,6 +42,10 @@ target_link_libraries(arm_core PUBLIC
 add_executable(validate_dynamics src/validate_dynamics.cpp)
 target_link_libraries(validate_dynamics arm_core)
 install(TARGETS validate_dynamics DESTINATION lib/${PROJECT_NAME})
+
+add_executable(validate_payload_estimator src/validate_payload_estimator.cpp)
+target_link_libraries(validate_payload_estimator arm_core)
+install(TARGETS validate_payload_estimator DESTINATION lib/${PROJECT_NAME})
 
 # --- Steps 1-3: headless runner (bare executable, no ROS dependency) ----------
 add_executable(main_headless src/main_headless.cpp)

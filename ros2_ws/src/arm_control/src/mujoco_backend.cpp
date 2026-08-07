@@ -2,6 +2,7 @@
 
 #include <mujoco/mujoco.h>
 
+#include <cmath>
 #include <stdexcept>
 
 namespace arm_control {
@@ -54,6 +55,27 @@ void MujocoBackend::reset() {
   // Start from the home keyframe (a keyframe alone does not change mj_resetData).
   mj_resetDataKeyframe(m_, d_, home_id_);
   mj_forward(m_, d_);  // populate site_xpos etc. for a valid pre-loop read
+}
+
+void MujocoBackend::set_body_mass(const std::string& body_name, double mass) {
+  if (!std::isfinite(mass) || mass < 0.0) {
+    throw std::invalid_argument("body mass must be finite and non-negative");
+  }
+  const int body_id = mj_name2id(m_, mjOBJ_BODY, body_name.c_str());
+  if (body_id < 0) {
+    throw std::invalid_argument("body not found: " + body_name);
+  }
+  const double old_mass = m_->body_mass[body_id];
+  if (!(old_mass > 0.0)) {
+    throw std::runtime_error("cannot scale a body with zero source mass");
+  }
+  const double scale = mass / old_mass;
+  m_->body_mass[body_id] = mass;
+  for (int axis = 0; axis < 3; ++axis) {
+    m_->body_inertia[3 * body_id + axis] *= scale;
+  }
+  mj_setConst(m_, d_);
+  reset();
 }
 
 int MujocoBackend::dof() const { return m_->nu; }

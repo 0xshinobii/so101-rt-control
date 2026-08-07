@@ -3,6 +3,10 @@ arm_control_node:
     # Path is resolved inside the container (repo bind-mounted at /work).
     model_path: "/work/models/so101/scene_torque.xml"
     urdf_path: "/work/models/so101/so101_dynamics.urdf"
+    payload_urdf_path: "/work/models/so101/so101_dynamics_payload.urdf"
+    reference_payload_mass: 0.20
+    # Negative leaves the MJCF payload mass unchanged.
+    plant_payload_mass: -1.0
     controller_type: "pd"
     reference_type: "smooth"
     rate_hz: 200.0
@@ -12,4 +16,10 @@ arm_control_node:
     # Acceleration-domain gains for computed_torque (wn=20 rad/s, zeta=1).
     computed_kp: [400.0, 400.0, 400.0, 400.0, 400.0, 400.0]
     computed_kd: [40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
+    # Constant-mass Phase 5 benchmarks use plain RLS (forgetting factor 1).
+    rls_initial_mass: 0.0
+    rls_initial_covariance: 100.0
+    rls_forgetting_factor: 1.0
+    rls_max_mass: 0.5
+    rls_excitation_threshold: 1.0e-8
     target: [0.6, 0.7, -0.8, 0.5, 0.4, 0.0]

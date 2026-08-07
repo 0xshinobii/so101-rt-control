@@ -2,6 +2,7 @@
 // no MuJoCo) so both the headless core and the ROS 2 node use the same records.
 #pragma once
 #include <array>
+#include <limits>
 
 namespace arm_control {
 
@@ -19,6 +20,8 @@ struct Sample {
   std::array<double, kDof> qd{};
   std::array<double, kDof> tau{};
   std::array<double, 3> ee{};
+  double estimated_payload_mass =
+      std::numeric_limits<double>::quiet_NaN();
 };
 
 }  // namespace arm_control
