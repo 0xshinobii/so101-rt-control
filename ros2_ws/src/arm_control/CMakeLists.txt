@@ -63,6 +63,14 @@ add_executable(bus_timing src/bus_timing.cpp src/feetech_bus.cpp)
 target_include_directories(bus_timing PRIVATE include)
 install(TARGETS bus_timing DESTINATION lib/${PROJECT_NAME})
 
+add_executable(calibrate_so101 src/calibrate_so101.cpp src/feetech_bus.cpp)
+target_include_directories(calibrate_so101 PRIVATE include)
+install(TARGETS calibrate_so101 DESTINATION lib/${PROJECT_NAME})
+
+add_executable(home_so101 src/home_so101.cpp src/feetech_bus.cpp)
+target_include_directories(home_so101 PRIVATE include)
+install(TARGETS home_so101 DESTINATION lib/${PROJECT_NAME})
+
 # --- Step 4: ROS 2 node (added when its deps are available) -------------------
 find_package(rclcpp QUIET)
 find_package(sensor_msgs QUIET)
