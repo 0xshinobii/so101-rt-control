@@ -1,0 +1,227 @@
+#include "arm_control/feetech_bus.hpp"
+
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <stdexcept>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+
+namespace arm_control {
+namespace {
+
+int64_t now_ns() {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+}
+
+speed_t baud_flag(int baud) {
+  switch (baud) {
+    case 115200:
+      return B115200;
+    case 1000000:
+      return B1000000;
+    default:
+      throw std::invalid_argument("unsupported baud");
+  }
+}
+
+}  // namespace
+
+FeetechBus::~FeetechBus() { close(); }
+
+void FeetechBus::close() {
+  if (fd_ >= 0) {
+    ::close(fd_);
+    fd_ = -1;
+  }
+}
+
+void FeetechBus::open(const std::string& device, int baud) {
+  close();
+  fd_ = ::open(device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+  if (fd_ < 0) {
+    throw std::runtime_error(std::string("open ") + device + ": " +
+                             std::strerror(errno));
+  }
+  termios tio{};
+  if (tcgetattr(fd_, &tio) != 0) {
+    close();
+    throw std::runtime_error("tcgetattr failed");
+  }
+  cfmakeraw(&tio);
+  const speed_t spd = baud_flag(baud);
+  cfsetispeed(&tio, spd);
+  cfsetospeed(&tio, spd);
+  tio.c_cflag |= (CLOCAL | CREAD);
+  tio.c_cc[VMIN] = 0;
+  tio.c_cc[VTIME] = 0;
+  if (tcsetattr(fd_, TCSANOW, &tio) != 0) {
+    close();
+    throw std::runtime_error("tcsetattr failed");
+  }
+  tcflush(fd_, TCIOFLUSH);
+}
+
+uint8_t FeetechBus::checksum(const uint8_t* p, size_t n) {
+  unsigned sum = 0;
+  for (size_t i = 0; i < n; ++i) sum += p[i];
+  return static_cast<uint8_t>(~sum);
+}
+
+void FeetechBus::tx(const uint8_t* data, size_t n) {
+  size_t off = 0;
+  while (off < n) {
+    const ssize_t w = ::write(fd_, data + off, n - off);
+    if (w < 0) {
+      if (errno == EAGAIN || errno == EINTR) continue;
+      throw std::runtime_error(std::string("serial write: ") +
+                               std::strerror(errno));
+    }
+    off += static_cast<size_t>(w);
+  }
+  tcdrain(fd_);
+  ++stats_.tx_packets;
+}
+
+bool FeetechBus::rx_byte(uint8_t& b, int64_t deadline_ns) {
+  while (true) {
+    const ssize_t n = ::read(fd_, &b, 1);
+    if (n == 1) return true;
+    if (n < 0 && errno != EAGAIN && errno != EINTR) return false;
+    if (now_ns() >= deadline_ns) {
+      ++stats_.timeouts;
+      return false;
+    }
+  }
+}
+
+bool FeetechBus::rx_status(uint8_t expected_id, uint8_t* data,
+                          uint8_t data_len) {
+  const int64_t deadline = now_ns() + rx_timeout_ns_;
+  uint8_t b = 0;
+  int ff = 0;
+  while (ff < 2) {
+    if (!rx_byte(b, deadline)) return false;
+    if (b == 0xFF)
+      ++ff;
+    else
+      ff = 0;
+  }
+  uint8_t hdr[3];
+  for (int i = 0; i < 3; ++i) {
+    if (!rx_byte(hdr[i], deadline)) return false;
+  }
+  const uint8_t id = hdr[0];
+  const uint8_t length = hdr[1];
+  const uint8_t error = hdr[2];
+  if (length < 2) {
+    ++stats_.checksum_errors;
+    return false;
+  }
+  const uint8_t payload_len = static_cast<uint8_t>(length - 2);
+  std::vector<uint8_t> payload(payload_len);
+  for (uint8_t i = 0; i < payload_len; ++i) {
+    if (!rx_byte(payload[i], deadline)) return false;
+  }
+  uint8_t csum = 0;
+  if (!rx_byte(csum, deadline)) return false;
+  unsigned sum = id + length + error;
+  for (uint8_t v : payload) sum += v;
+  const uint8_t expect = static_cast<uint8_t>(~sum);
+  if (csum != expect || id != expected_id) {
+    ++stats_.checksum_errors;
+    return false;
+  }
+  if (data != nullptr) {
+    const uint8_t n = std::min(data_len, payload_len);
+    for (uint8_t i = 0; i < n; ++i) data[i] = payload[i];
+  }
+  ++stats_.rx_packets;
+  return true;
+}
+
+bool FeetechBus::ping(uint8_t id) {
+  uint8_t pkt[6] = {0xFF, 0xFF, id, 2, kInstPing, 0};
+  pkt[5] = checksum(pkt + 2, 3);
+  tcflush(fd_, TCIFLUSH);
+  tx(pkt, sizeof(pkt));
+  return rx_status(id, nullptr, 0);
+}
+
+bool FeetechBus::read(uint8_t id, uint8_t addr, uint8_t length, uint8_t* out) {
+  uint8_t pkt[8] = {0xFF, 0xFF, id, 4, kInstRead, addr, length, 0};
+  pkt[7] = checksum(pkt + 2, 5);
+  tcflush(fd_, TCIFLUSH);
+  tx(pkt, sizeof(pkt));
+  return rx_status(id, out, length);
+}
+
+bool FeetechBus::write(uint8_t id, uint8_t addr, const uint8_t* data,
+                      uint8_t length) {
+  std::vector<uint8_t> pkt(7 + length);
+  pkt[0] = 0xFF;
+  pkt[1] = 0xFF;
+  pkt[2] = id;
+  pkt[3] = static_cast<uint8_t>(3 + length);
+  pkt[4] = kInstWrite;
+  pkt[5] = addr;
+  for (uint8_t i = 0; i < length; ++i) pkt[6 + i] = data[i];
+  pkt.back() = checksum(pkt.data() + 2, 4 + length);
+  tcflush(fd_, TCIFLUSH);
+  tx(pkt.data(), pkt.size());
+  return rx_status(id, nullptr, 0);
+}
+
+bool FeetechBus::sync_read(const std::vector<uint8_t>& ids, uint8_t addr,
+                           uint8_t length, std::vector<uint8_t>& out) {
+  out.assign(ids.size() * length, 0);
+  std::vector<uint8_t> pkt(8 + ids.size());
+  pkt[0] = 0xFF;
+  pkt[1] = 0xFF;
+  pkt[2] = kBroadcastId;
+  pkt[3] = static_cast<uint8_t>(4 + ids.size());
+  pkt[4] = kInstSyncRead;
+  pkt[5] = addr;
+  pkt[6] = length;
+  for (size_t i = 0; i < ids.size(); ++i) pkt[7 + i] = ids[i];
+  pkt.back() = checksum(pkt.data() + 2, 5 + ids.size());
+  tcflush(fd_, TCIFLUSH);
+  tx(pkt.data(), pkt.size());
+  bool ok = true;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    if (!rx_status(ids[i], out.data() + i * length, length)) ok = false;
+  }
+  return ok;
+}
+
+bool FeetechBus::sync_write(const std::vector<uint8_t>& ids, uint8_t addr,
+                            const std::vector<uint8_t>& data) {
+  if (ids.empty()) return false;
+  const size_t per = data.size() / ids.size();
+  if (per == 0 || data.size() != per * ids.size()) {
+    throw std::invalid_argument("sync_write data size mismatch");
+  }
+  std::vector<uint8_t> pkt(8 + ids.size() * (1 + per));
+  pkt[0] = 0xFF;
+  pkt[1] = 0xFF;
+  pkt[2] = kBroadcastId;
+  pkt[3] = static_cast<uint8_t>(4 + ids.size() * (1 + per));
+  pkt[4] = kInstSyncWrite;
+  pkt[5] = addr;
+  pkt[6] = static_cast<uint8_t>(per);
+  size_t o = 7;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    pkt[o++] = ids[i];
+    for (size_t j = 0; j < per; ++j) pkt[o++] = data[i * per + j];
+  }
+  pkt.back() = checksum(pkt.data() + 2, pkt.size() - 3);
+  tcflush(fd_, TCIFLUSH);
+  tx(pkt.data(), pkt.size());
+  return true;
+}
+
+}  // namespace arm_control

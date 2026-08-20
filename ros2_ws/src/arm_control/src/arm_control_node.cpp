@@ -3,9 +3,15 @@
 // through a lock-free SPSC ring; a wall-timer on the executor thread drains it
 // and publishes JointState + ArmMetrics. rclcpp::spin never touches the hot path
 // -- exactly the isolation Phase 3's RT thread needs.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <atomic>
+#include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -23,6 +29,7 @@
 #include "arm_control/controller.hpp"
 #include "arm_control/mujoco_backend.hpp"
 #include "arm_control/pd_controller.hpp"
+#include "arm_control/rt_thread.hpp"
 #include "arm_control/spsc_ring.hpp"
 #include "arm_msgs/msg/arm_metrics.hpp"
 
@@ -77,6 +84,11 @@ public:
     reference_type_ =
         declare_parameter<std::string>("reference_type", "smooth");
     rate_hz_ = declare_parameter<double>("rate_hz", 200.0);
+    rt_enable_ = declare_parameter<bool>("rt_enable", true);
+    rt_priority_ = declare_parameter<int>("rt_priority", 80);
+    rt_cpu_ = declare_parameter<int>("rt_cpu", -1);
+    jitter_samples_ = declare_parameter<int>("jitter_samples", 60000);
+    jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
     const auto kd = declare_parameter<std::vector<double>>(
@@ -155,6 +167,25 @@ public:
 private:
   // Runs on its own thread. Fixed-rate; RT-clean body (no alloc, no rclcpp).
   void control_loop() {
+    if (rt_enable_) {
+      arm_control::RtConfig cfg;
+      cfg.fifo_priority = rt_priority_;
+      cfg.cpu_affinity = rt_cpu_;
+      const arm_control::RtStatus rt = arm_control::configure_rt_thread(cfg);
+      std::fprintf(stderr,
+                   "rt: mlockall=%d fifo=%d affinity=%d cstates=%d\n",
+                   rt.memory_locked, rt.fifo_set, rt.affinity_set,
+                   rt.cstates_suppressed);
+      if (!rt.error.empty()) {
+        std::fprintf(stderr, "rt warnings: %s\n", rt.error.c_str());
+      }
+    }
+
+    const size_t jitter_cap =
+        jitter_samples_ > 0 ? static_cast<size_t>(jitter_samples_) : 0;
+    std::vector<int64_t> late_ns(jitter_cap);
+    size_t jitter_n = 0;
+
     const auto period = std::chrono::duration<double>(1.0 / rate_hz_);
     auto next = std::chrono::steady_clock::now();
     arm_control::Sample s;  // reused; no per-iteration allocation
@@ -166,9 +197,44 @@ private:
       }
       loop_->step_once(s);
       ring_.push(s);  // best-effort; never blocks the control thread
-      next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
-      std::this_thread::sleep_until(next);
+      next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          period);
+      arm_control::sleep_until_monotonic(next);
+      if (jitter_n < jitter_cap) {
+        const auto now = std::chrono::steady_clock::now();
+        late_ns[jitter_n++] =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - next)
+                .count();
+      }
     }
+
+    if (jitter_n == 0) return;
+    int64_t min_ns = late_ns[0];
+    int64_t max_ns = late_ns[0];
+    long double sum = 0;
+    for (size_t i = 0; i < jitter_n; ++i) {
+      if (late_ns[i] < min_ns) min_ns = late_ns[i];
+      if (late_ns[i] > max_ns) max_ns = late_ns[i];
+      sum += static_cast<long double>(late_ns[i]);
+    }
+    std::fprintf(stderr,
+                 "control jitter: n=%zu Min: %.3f Avg: %.3f Max: %.3f (us)\n",
+                 jitter_n, min_ns / 1000.0,
+                 static_cast<double>(sum / jitter_n) / 1000.0,
+                 max_ns / 1000.0);
+    if (jitter_csv_.empty()) return;
+    std::ofstream out(jitter_csv_);
+    if (!out) {
+      std::fprintf(stderr, "failed to write %s\n", jitter_csv_.c_str());
+      return;
+    }
+    out << "# rate_hz=" << rate_hz_ << "\n";
+    out << "i,late_us\n";
+    out.precision(9);
+    for (size_t i = 0; i < jitter_n; ++i) {
+      out << i << ',' << late_ns[i] / 1000.0 << '\n';
+    }
+    std::fprintf(stderr, "wrote %s\n", jitter_csv_.c_str());
   }
 
   // Runs on the executor (non-RT) thread. Drains the ring and publishes the
@@ -215,6 +281,11 @@ private:
   Eigen::VectorXd qdot_ref_;
   Eigen::VectorXd qddot_ref_;
   double rate_hz_ = 200.0;
+  bool rt_enable_ = true;
+  int rt_priority_ = 80;
+  int rt_cpu_ = -1;
+  int jitter_samples_ = 60000;
+  std::string jitter_csv_;
 
   // RT <-> non-RT handoff.
   arm_control::SpscRing<arm_control::Sample> ring_;

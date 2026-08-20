@@ -52,6 +52,17 @@ add_executable(main_headless src/main_headless.cpp)
 target_link_libraries(main_headless arm_core)
 install(TARGETS main_headless DESTINATION lib/${PROJECT_NAME})
 
+# Phase 3: wall-clock wakeup jitter. Header-only RT setup; no MuJoCo.
+add_executable(rt_jitter_bench src/rt_jitter_bench.cpp)
+target_include_directories(rt_jitter_bench PRIVATE include)
+target_link_libraries(rt_jitter_bench PRIVATE pthread)
+install(TARGETS rt_jitter_bench DESTINATION lib/${PROJECT_NAME})
+
+# Phase 7: serial-bus RTT (no MuJoCo).
+add_executable(bus_timing src/bus_timing.cpp src/feetech_bus.cpp)
+target_include_directories(bus_timing PRIVATE include)
+install(TARGETS bus_timing DESTINATION lib/${PROJECT_NAME})
+
 # --- Step 4: ROS 2 node (added when its deps are available) -------------------
 find_package(rclcpp QUIET)
 find_package(sensor_msgs QUIET)
@@ -60,6 +71,7 @@ if(rclcpp_FOUND AND sensor_msgs_FOUND AND arm_msgs_FOUND)
   add_executable(arm_control_node src/arm_control_node.cpp)
   target_link_libraries(arm_control_node arm_core)
   ament_target_dependencies(arm_control_node rclcpp sensor_msgs arm_msgs)
+  target_link_libraries(arm_control_node pthread)
   install(TARGETS arm_control_node DESTINATION lib/${PROJECT_NAME})
   message(STATUS "arm_control: building ROS 2 node arm_control_node")
 else()

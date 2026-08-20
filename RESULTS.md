@@ -156,3 +156,41 @@ automated gate is frozen at 0.0035 kg, approximately 30% margin, rather than
 being chosen before measurement. `tools/phase5_bench.py` also retains 50% gap
 recovery only as a bug-detection floor; the measured recovery above is the
 reported result.
+
+## Phase 3 — PREEMPT_RT wakeup jitter
+
+Measured 2026-08-20 on the Ubuntu 26.04 box (i7-7700, 16 GB) after Phases 4–5.
+`ubuntu-realtime` 1.1.3 installed from resolute/main (`apt install ubuntu-realtime`;
+no Ubuntu Pro). Running kernel `7.0.0-30-realtime` with `PREEMPT_RT`. Generic
+baseline was `7.0.0-14-generic` (`PREEMPT_DYNAMIC`).
+
+`cyclictest -p 80 -t 1 -m -i 1000` (20k idle loops, 60k under `stress-ng`
+cpu+io+vm):
+
+| Kernel / load | Min [µs] | Avg [µs] | Max [µs] |
+|---------------|----------|----------|----------|
+| generic idle | 2 | 2 | 4 |
+| realtime idle | 2 | 2 | 6 |
+| realtime loaded | 2 | 2 | 27 |
+
+In-repo bench `rt_jitter_bench` (`mlockall`, `SCHED_FIFO` 80, absolute
+`clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`), same periods:
+
+| Load | n | Min | Avg | p99 | p99.9 | Max |
+|------|---|-----|-----|-----|-------|-----|
+| idle | 20000 | 2.20 | 2.43 | 2.88 | 3.34 | **6.89** |
+| loaded | 60000 | 2.22 | 3.38 | **6.18** | **11.34** | 438 |
+
+Idle Max matches cyclictest. Loaded **p99 / p99.9** are the operational numbers
+(6 / 11 µs). Loaded Max 438 µs is ~43/60000 ticks (0.07%), a rare desktop IRQ,
+not CPU starvation; at 200 Hz (5 ms) those ticks still meet the period.
+
+A first bench using `std::this_thread::sleep_until` produced idle Max 477 µs
+and is discarded: libstdc++ can wait with relative `nanosleep`. That was not a
+kernel number.
+
+Quote for later phases: idle Max **7 µs**, loaded p99 **6 µs**. USB-serial in
+Phase 7 will be milliseconds; OS wakeup is not the sim-to-real bottleneck.
+
+Tools: [`ros2_ws/src/arm_control/src/rt_jitter_bench.cpp`](ros2_ws/src/arm_control/src/rt_jitter_bench.cpp),
+[`tools/jitter_hist.py`](tools/jitter_hist.py).

@@ -23,3 +23,9 @@ arm_control_node:
     rls_max_mass: 0.5
     rls_excitation_threshold: 1.0e-8
     target: [0.6, 0.7, -0.8, 0.5, 0.4, 0.0]
+    # Phase 3 RT thread. fifo needs CAP_SYS_NICE (run the node as root / sudo).
+    rt_enable: true
+    rt_priority: 80
+    rt_cpu: -1
+    jitter_samples: 60000
+    jitter_csv: ""
