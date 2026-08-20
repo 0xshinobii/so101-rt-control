@@ -22,6 +22,7 @@ MujocoBackend::MujocoBackend(const std::string& xml_path,
   if (ee_site_id_ < 0) {
     throw std::runtime_error("EE site not found: " + ee_site);
   }
+  ee_body_id_ = m_->site_bodyid[ee_site_id_];
   home_id_ = mj_name2id(m_, mjOBJ_KEY, keyframe.c_str());
   if (home_id_ < 0) {
     throw std::runtime_error("keyframe not found: " + keyframe);
@@ -51,10 +52,31 @@ Eigen::Vector3d MujocoBackend::ee_position() {
   return Eigen::Vector3d(p[0], p[1], p[2]);
 }
 
+void MujocoBackend::set_ee_force_world(const Eigen::Vector3d& force) {
+  if (!force.allFinite()) {
+    throw std::invalid_argument("EE force must be finite");
+  }
+  for (int i = 0; i < m_->nv; ++i) d_->qfrc_applied[i] = 0.0;
+  const mjtNum force_mj[3] = {force.x(), force.y(), force.z()};
+  const mjtNum torque_mj[3] = {0.0, 0.0, 0.0};
+  const mjtNum* point = &d_->site_xpos[3 * ee_site_id_];
+  mj_applyFT(m_, d_, force_mj, torque_mj, point, ee_body_id_,
+             d_->qfrc_applied);
+}
+
+void MujocoBackend::applied_generalized_force(
+    Eigen::VectorXd& torque_out) const {
+  if (torque_out.size() != m_->nv) torque_out.resize(m_->nv);
+  for (int i = 0; i < m_->nv; ++i) {
+    torque_out[i] = d_->qfrc_applied[i];
+  }
+}
+
 void MujocoBackend::reset() {
   // Start from the home keyframe (a keyframe alone does not change mj_resetData).
   mj_resetDataKeyframe(m_, d_, home_id_);
   mj_forward(m_, d_);  // populate site_xpos etc. for a valid pre-loop read
+  for (int i = 0; i < m_->nv; ++i) d_->qfrc_applied[i] = 0.0;
 }
 
 void MujocoBackend::set_body_mass(const std::string& body_name, double mass) {

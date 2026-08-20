@@ -25,6 +25,12 @@ public:
                          const Eigen::VectorXd& qdot,
                          Eigen::VectorXd& tau_out);
   void mass_matrix(const Eigen::VectorXd& q, Eigen::MatrixXd& mass_out);
+  void coriolis_matrix(const Eigen::VectorXd& q,
+                       const Eigen::VectorXd& qdot,
+                       Eigen::MatrixXd& coriolis_out);
+  void frame_translation_jacobian(
+      const Eigen::VectorXd& q, const std::string& frame_name,
+      Eigen::Matrix<double, 3, kDof>& jacobian_out);
   void inverse_dynamics(const Eigen::VectorXd& q,
                         const Eigen::VectorXd& qdot,
                         const Eigen::VectorXd& qddot,

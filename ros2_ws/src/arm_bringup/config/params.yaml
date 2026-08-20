@@ -16,6 +16,11 @@ arm_control_node:
     # Acceleration-domain gains for computed_torque (wn=20 rad/s, zeta=1).
     computed_kp: [400.0, 400.0, 400.0, 400.0, 400.0, 400.0]
     computed_kd: [40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
+    # Generalized-momentum observer corner frequency.
+    dob_bandwidth_hz: 8.0
+    # Demo arbitration: identify payload first, then freeze RLS and enable DOB.
+    # Production hardware should replace this known-time gate with detection.
+    rls_freeze_time: 2.5
     # Constant-mass Phase 5 benchmarks use plain RLS (forgetting factor 1).
     rls_initial_mass: 0.0
     rls_initial_covariance: 100.0

@@ -17,8 +17,10 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 
 #include "arm_control/adaptive_computed_torque_controller.hpp"
+#include "arm_control/adaptive_computed_torque_dob_controller.hpp"
 #include "arm_control/arm_types.hpp"
 #include "arm_control/computed_torque_controller.hpp"
+#include "arm_control/computed_torque_dob_controller.hpp"
 #include "arm_control/control_loop.hpp"
 #include "arm_control/controller.hpp"
 #include "arm_control/mujoco_backend.hpp"
@@ -85,6 +87,10 @@ public:
         "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
     const auto computed_kd = declare_parameter<std::vector<double>>(
         "computed_kd", {40.0, 40.0, 40.0, 40.0, 40.0, 40.0});
+    const double dob_bandwidth_hz =
+        declare_parameter<double>("dob_bandwidth_hz", 8.0);
+    rls_freeze_time_ =
+        declare_parameter<double>("rls_freeze_time", 2.5);
     arm_control::PayloadMassRlsEstimator::Config estimator_config;
     estimator_config.initial_mass =
         declare_parameter<double>("rls_initial_mass", 0.0);
@@ -123,10 +129,24 @@ public:
               urdf_path, payload_urdf_path, reference_payload_mass,
               to_eigen(computed_kp), to_eigen(computed_kd),
               plant_->timestep(), estimator_config);
+    } else if (controller_type == "computed_torque_dob") {
+      controller_ =
+          std::make_unique<arm_control::ComputedTorqueDobController>(
+              urdf_path, to_eigen(computed_kp), to_eigen(computed_kd),
+              plant_->timestep(), dob_bandwidth_hz);
+    } else if (controller_type == "adaptive_computed_torque_dob") {
+      auto instance = std::make_unique<
+          arm_control::AdaptiveComputedTorqueDobController>(
+          urdf_path, payload_urdf_path, reference_payload_mass,
+          to_eigen(computed_kp), to_eigen(computed_kd),
+          plant_->timestep(), estimator_config, dob_bandwidth_hz);
+      adaptive_dob_ = instance.get();
+      controller_ = std::move(instance);
     } else {
       throw std::invalid_argument(
-          "controller_type must be pd, computed_torque, or "
-          "adaptive_computed_torque");
+          "controller_type must be pd, computed_torque, "
+          "adaptive_computed_torque, computed_torque_dob, or "
+          "adaptive_computed_torque_dob");
     }
     loop_ = std::make_unique<arm_control::ControlLoop>(*plant_, *controller_,
                                                        target_eigen_);
@@ -159,6 +179,11 @@ private:
     auto next = std::chrono::steady_clock::now();
     arm_control::Sample s;  // reused; no per-iteration allocation
     while (running_.load(std::memory_order_acquire)) {
+      if (adaptive_dob_ && !rls_frozen_ && rls_freeze_time_ >= 0.0 &&
+          plant_->time() >= rls_freeze_time_) {
+        adaptive_dob_->set_estimator_frozen(true);
+        rls_frozen_ = true;
+      }
       if (reference_type_ == "smooth") {
         minimum_jerk_reference(plant_->time(), target_eigen_, q_ref_,
                                qdot_ref_, qddot_ref_);
@@ -201,12 +226,16 @@ private:
     }
     m.arm_rms_error = std::sqrt(sumsq / kArmJoints);
     m.estimated_payload_mass = s.estimated_payload_mass;
+    std::copy(s.estimated_disturbance_torque.begin(),
+              s.estimated_disturbance_torque.end(),
+              m.estimated_disturbance_torque.begin());
     metrics_pub_->publish(m);
   }
 
   // Control core.
   std::unique_ptr<arm_control::MujocoBackend> plant_;
   std::unique_ptr<arm_control::Controller> controller_;
+  arm_control::AdaptiveComputedTorqueDobController* adaptive_dob_ = nullptr;
   std::unique_ptr<arm_control::ControlLoop> loop_;
   std::vector<double> target_;
   std::string reference_type_;
@@ -215,6 +244,8 @@ private:
   Eigen::VectorXd qdot_ref_;
   Eigen::VectorXd qddot_ref_;
   double rate_hz_ = 200.0;
+  double rls_freeze_time_ = 2.5;
+  bool rls_frozen_ = false;
 
   // RT <-> non-RT handoff.
   arm_control::SpscRing<arm_control::Sample> ring_;

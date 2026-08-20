@@ -34,6 +34,11 @@ public:
   // principal inertia together, then refreshes MuJoCo's derived constants.
   void set_body_mass(const std::string& body_name, double mass);
 
+  // Simulation-only disturbance injection. Applies a world-frame force at the
+  // exact EE site for the next step (not at the parent body's COM).
+  void set_ee_force_world(const Eigen::Vector3d& force);
+  void applied_generalized_force(Eigen::VectorXd& torque_out) const;
+
   int dof() const override;
   double timestep() const override;
   double time() const override;
@@ -42,6 +47,7 @@ private:
   mjModel* m_ = nullptr;
   mjData* d_ = nullptr;
   int ee_site_id_ = -1;
+  int ee_body_id_ = -1;
   int home_id_ = -1;
 };
 

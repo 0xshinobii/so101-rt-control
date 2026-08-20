@@ -3,6 +3,8 @@
 #include <stdexcept>
 
 #include <pinocchio/algorithm/crba.hpp>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
@@ -90,6 +92,41 @@ void PinocchioDynamics::mass_matrix(const Eigen::VectorXd& q,
   for (int row = 0; row < kDof; ++row) {
     for (int col = 0; col < kDof; ++col) {
       mass_out(row, col) = data_->M(v_index_[row], v_index_[col]);
+    }
+  }
+}
+
+void PinocchioDynamics::coriolis_matrix(
+    const Eigen::VectorXd& q, const Eigen::VectorXd& qdot,
+    Eigen::MatrixXd& coriolis_out) {
+  map_configuration(q);
+  map_velocity(qdot, pin_v_);
+  pinocchio::computeCoriolisMatrix(model_, *data_, pin_q_, pin_v_);
+
+  coriolis_out.resize(kDof, kDof);
+  for (int row = 0; row < kDof; ++row) {
+    for (int col = 0; col < kDof; ++col) {
+      coriolis_out(row, col) =
+          data_->C(v_index_[row], v_index_[col]);
+    }
+  }
+}
+
+void PinocchioDynamics::frame_translation_jacobian(
+    const Eigen::VectorXd& q, const std::string& frame_name,
+    Eigen::Matrix<double, 3, kDof>& jacobian_out) {
+  if (!model_.existFrame(frame_name)) {
+    throw std::invalid_argument("Pinocchio frame not found: " + frame_name);
+  }
+  map_configuration(q);
+  Eigen::Matrix<double, 6, Eigen::Dynamic> pin_jacobian(6, model_.nv);
+  pin_jacobian.setZero();
+  pinocchio::computeFrameJacobian(
+      model_, *data_, pin_q_, model_.getFrameId(frame_name),
+      pinocchio::LOCAL_WORLD_ALIGNED, pin_jacobian);
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < kDof; ++col) {
+      jacobian_out(row, col) = pin_jacobian(row, v_index_[col]);
     }
   }
 }

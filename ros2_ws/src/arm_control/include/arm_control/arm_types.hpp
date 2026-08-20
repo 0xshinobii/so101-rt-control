@@ -19,6 +19,11 @@ struct Sample {
   std::array<double, kDof> q{};
   std::array<double, kDof> qd{};
   std::array<double, kDof> tau{};
+  std::array<double, kDof> estimated_disturbance_torque{};
+  std::array<double, kDof> true_disturbance_torque{};
+  std::array<double, 3> external_force{};
+  std::array<double, 3> estimated_external_force{};
+  double jacobian_condition = 0.0;
   std::array<double, 3> ee{};
   double estimated_payload_mass =
       std::numeric_limits<double>::quiet_NaN();

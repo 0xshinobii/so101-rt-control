@@ -156,3 +156,105 @@ automated gate is frozen at 0.0035 kg, approximately 30% margin, rather than
 being chosen before measurement. `tools/phase5_bench.py` also retains 50% gap
 recovery only as a bug-detection floor; the measured recovery above is the
 reported result.
+
+## Phase 6 — Momentum disturbance observer
+
+Phase 6 replaces the originally proposed sliding-mode controller with an
+industry-aligned generalized-momentum disturbance observer (DOB). The observer
+uses the Pinocchio mass matrix, gravity, and the required `C^T qdot` term:
+
+`r = K [p - integral(tau_applied + C^T qdot - g + r) dt]`,
+with `p = M qdot`. Under the convention
+`M qddot + C qdot + g = tau_command + tau_external`, the residual converges to
+external joint torque and the controller applies `tau_model - r`.
+
+The blocking validator passes before any benchmark:
+
+- Exact model/no disturbance: worst residual `8.03e-6 N.m`.
+- Known constant joint disturbance: worst estimate error `8.03e-6 N.m`.
+- `Mdot - C - C^T` identity: worst error `5.40e-12`.
+- MuJoCo force-at-EE vs Pinocchio `J^T f`: worst error `3.33e-16 N.m`.
+
+### Constant horizontal force
+
+A 3 N world-X force begins at 2.5 s. Metrics use separate windows:
+pre-onset `[1.5, 2.5)`, onset transient `[2.5, 3.5)`, and post-onset
+`t >= 3.5`. The table reports the post-onset window; arm RMS is the mean of
+the five per-joint RMS values, matching Phases 4–5.
+
+| Case | Controller / plant | Arm RMS [rad] | EE miss [m] | Peak torque [N.m] |
+|------|--------------------|---------------|-------------|---------------------|
+| B | empty CT + force | 0.009301 | 0.011339 | 1.360 |
+| C | empty CT+DOB + force | 0.000075 | 0.000533 | 1.445 |
+| F | adaptive CT, 0.20 kg + force | 0.006961 | 0.007189 | 1.919 |
+| G | empty-model CT+DOB, 0.20 kg + force | 0.000079 | 0.000534 | 2.004 |
+| H | adaptive CT+DOB, 0.20 kg + force | 0.000072 | 0.000534 | 1.919 |
+
+The DOB reduces constant-force joint RMS by **99.2%** (B→C) and Cartesian miss
+by **95.3%**. The stacked controller reduces adaptive-only joint RMS by
+**99.0%** (F→H) and Cartesian miss by **92.6%**.
+
+G and H deliberately track almost identically: a live DOB can reject payload
+and force as one lumped residual. The stacking advantage is observer authority
+and interpretation, not tracking. G's disturbance RMS norm is `1.185729 N.m`;
+H's is `0.704628 N.m`, **40.6% lower**, while H retains a physical payload
+estimate. In the frozen cross-trajectory test, H also transfers better:
+`0.008257 rad` versus G's `0.009323 rad` on the second pose. The large
+one-second pose reversal transient saturates both transfer cases, so this is a
+reported generalization diagnostic rather than a primary no-saturation gate.
+
+The stacked no-force regression preserves Phase 5 behavior: adaptive CT and
+adaptive CT+DOB both measure `0.003158 rad` over the Phase-4-compatible
+`t >= 1.5` window, with raw final mass estimates `0.194724` and `0.186587 kg`.
+The DOB is rebased while RLS is live, then enabled when the estimate is frozen,
+so it cannot starve payload identification.
+
+### Payload/force identifiability
+
+Horizontal force is structurally distinct from payload gravity. On the empty
+plant, RLS does not fit it: the raw estimate remains at the empty-model bias
+(`-0.008362 kg`) and tracking equals plain CT (case D equals B). This measured
+result is more benign than the pre-run prediction that RLS might hit its
+projection bound.
+
+The vertical-force aliasing case behaves differently. A 3 N downward force is
+partly absorbed as a fictitious `0.150754 kg` payload estimate, demonstrating
+why force direction matters and why payload RLS cannot by itself identify
+general external contact.
+
+For F/H, freezing `m_hat` at the known benchmark force onset intentionally uses
+information a deployed system would not have. The freeze isolates the DOB
+contribution by removing the identifiability confound. A deployable version
+would need a disturbance detector or persistent-excitation test to decide when
+RLS updates are trustworthy.
+
+### Measured observer bandwidth and force reconstruction
+
+The DOB corner is 8 Hz. A 3 N horizontal sinusoid is measured over whole-cycle
+post-onset windows at 0.5, 2, and 12 Hz. `tau_external,true = J_v^T f` uses the
+world-aligned gripper-frame Jacobian; amplitude and phase come from the direct
+estimate-vs-truth complex gain.
+
+| Frequency [Hz] | Theory amplitude / phase | Measured amplitude / phase | CT RMS [rad] | CT+DOB RMS [rad] |
+|----------------|--------------------------|----------------------------|--------------|------------------|
+| 0.5 | 0.998 / -3.6 deg | 1.102 / -7.8 deg | 0.005947 | 0.000642 |
+| 2.0 | 0.970 / -14.0 deg | 0.992 / -24.6 deg | 0.003364 | 0.001345 |
+| 12.0 | 0.555 / -56.3 deg | 0.469 / -63.7 deg | 0.000695 | 0.000311 |
+
+The monotonic roll-off validates that the configured gain is a real observer
+bandwidth. Absolute CT error is reported because the arm itself attenuates the
+12 Hz force; a tracking ratio alone would be ambiguous. Damped-least-squares
+Cartesian force reconstruction has RMSE `0.637`, `0.957`, and `1.143 N` at the
+three frequencies (Jacobian condition approximately `7.1`). It is useful as a
+sensorless contact estimate, but includes velocity-dependent friction and model
+residuals, so it is not equivalent to a calibrated force/torque sensor.
+
+Finally, the DOB beats the Phase-4 Coulomb-friction floor without inducing the
+anticipated limit cycle: joint RMS falls from the 5 s CT no-force value
+`0.003650 rad` to `0.000075 rad` under force rejection, while post-settle joint
+peak-to-peak motion falls from `0.001617` to `0.000401 rad` and velocity RMS
+from `0.001466` to `0.000356 rad/s`.
+
+`tools/phase6_bench.py` freezes the measured acceptance tolerances and emits
+`phase6_frequency_response.csv` plus an SVG plot. The complete Phase 2–6
+regression runs through `docker/build_and_validate.sh`.

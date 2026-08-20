@@ -1,5 +1,7 @@
 #include "arm_control/control_loop.hpp"
 
+#include <limits>
+
 namespace arm_control {
 
 ControlLoop::ControlLoop(PlantInterface& plant, Controller& controller,
@@ -42,6 +44,13 @@ void ControlLoop::step_once(Sample& out) {
     out.q[i] = q_[i];
     out.qd[i] = qdot_[i];
     out.tau[i] = tau_[i];
+  }
+  const Eigen::VectorXd* disturbance =
+      controller_.estimated_disturbance_torque();
+  for (int i = 0; i < kDof; ++i) {
+    out.estimated_disturbance_torque[i] =
+        disturbance ? (*disturbance)[i]
+                    : std::numeric_limits<double>::quiet_NaN();
   }
   out.estimated_payload_mass = controller_.estimated_payload_mass();
   const Eigen::Vector3d ee = plant_.ee_position();

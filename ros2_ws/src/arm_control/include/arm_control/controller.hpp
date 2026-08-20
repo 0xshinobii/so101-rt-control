@@ -1,5 +1,6 @@
 // The controller abstraction: same signature for the naive PD now and for
-// computed-torque / EKF+SMC later. Always outputs torque, so it is 100%
+// computed-torque / adaptive+DOB controllers. Always outputs torque, so it is
+// 100%
 // backend-agnostic (see PlantInterface).
 #pragma once
 #include <limits>
@@ -26,6 +27,12 @@ public:
   // Optional fixed-size telemetry. Non-estimating controllers retain NaN.
   virtual double estimated_payload_mass() const {
     return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  // Optional six-joint external-disturbance estimate [N.m]. Null means that
+  // the controller has no disturbance observer.
+  virtual const Eigen::VectorXd* estimated_disturbance_torque() const {
+    return nullptr;
   }
 };
 
