@@ -60,6 +60,7 @@ private:
   Eigen::VectorXd qdot_;
   Eigen::VectorXd q_cmd_;
   bool have_q_ = false;
+  bool have_q_cmd_ = false;
   int bus_fails_ = 0;
   double t_ = 0.0;
   bool period_armed_ = false;

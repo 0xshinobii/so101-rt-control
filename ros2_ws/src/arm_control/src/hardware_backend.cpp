@@ -72,7 +72,7 @@ void HardwareBackend::enable_torque_at_current() {
     throw std::runtime_error("cannot read pose before enabling torque");
   }
   write_ticks(ticks);
-  const uint8_t acc = 30;
+  const uint8_t acc = 0;  // 0 = max; a slow ramp resets if Goal_Position updates at 200 Hz
   const uint8_t speed[2] = {0, 0};
   for (uint8_t id : ids_) {
     bus_.write(id, kAddrAcceleration, &acc, 1);
@@ -150,11 +150,20 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
   if (!have_q_) {
     throw std::runtime_error("apply_torque before read_state");
   }
+  if (!have_q_cmd_) {
+    q_cmd_ = q_;
+    have_q_cmd_ = true;
+  }
   std::array<int, kDof> ticks{};
   for (int i = 0; i < kDof; ++i) {
     double dq = tau[i] / cfg_.k_servo;
     dq = std::clamp(dq, -cfg_.max_delta_q, cfg_.max_delta_q);
-    q_cmd_[i] = q_[i] + dq;
+    q_cmd_[i] += dq;
+    const auto& c = calib_[i];
+    double q_lo = c.sign * (c.min_ticks - c.zero_ticks) * kRadPerTick;
+    double q_hi = c.sign * (c.max_ticks - c.zero_ticks) * kRadPerTick;
+    if (q_lo > q_hi) std::swap(q_lo, q_hi);
+    q_cmd_[i] = std::clamp(q_cmd_[i], q_lo, q_hi);
   }
   q_cmd_[5] = 0.0;  // hold gripper at calibrated zero
   for (int i = 0; i < kDof; ++i) ticks[i] = q_to_tick(i, q_cmd_[i]);
@@ -208,6 +217,12 @@ void HardwareBackend::reset() {
     next += period;
     sleep_until_monotonic(next);
   }
+  std::array<int, kDof> now{};
+  if (!read_ticks(now)) {
+    throw std::runtime_error("reset: read failed after home");
+  }
+  ticks_to_q(now, q_cmd_);
+  have_q_cmd_ = true;
   have_q_ = false;
   qdot_.setZero();
   t_ = 0.0;
