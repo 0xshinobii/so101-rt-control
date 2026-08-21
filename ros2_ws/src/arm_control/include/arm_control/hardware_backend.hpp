@@ -37,6 +37,7 @@ public:
 
   void read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) override;
   void apply_torque(const Eigen::VectorXd& tau) override;
+  void write_goal_q(const Eigen::VectorXd& q);
   void step() override;
   Eigen::Vector3d ee_position() override;
   void reset() override;

@@ -194,3 +194,47 @@ Phase 7 will be milliseconds; OS wakeup is not the sim-to-real bottleneck.
 
 Tools: [`ros2_ws/src/arm_control/src/rt_jitter_bench.cpp`](ros2_ws/src/arm_control/src/rt_jitter_bench.cpp),
 [`tools/jitter_hist.py`](tools/jitter_hist.py).
+
+## Phase 7 — SO-ARM101 hardware, matched-rate min-jerk
+
+Follower: ThinkRobotics SO-ARM101, 6× STS3215 on `/dev/ttyACM0` (WCH 1a86).
+`f_hw = 200 Hz` (`dt = 0.005`), same as `so101_torque.xml`. Bus RTT (2000
+loops, zero loss): sync_read p99.9 1.71 ms, sync_write p99.9 0.19 ms, I/O
+together ~1.90 ms (~38% of the 5 ms period). `bus_timeout_ns = 5_130_000`.
+
+Tick→rad gate at calibrated `q = 0`: model EE (MuJoCo) x=39.1 cm, y≈0,
+z=24.6 cm; ruler x≈39 cm, y=0, z≈27 cm. Signs were not inverted.
+
+The STS3215 has no closed-loop N·m mode. The first tracking run that counts
+is **position streaming**: after a min-jerk home to calib zero, `hardware_run`
+writes the same 1.0 s min-jerk `q_des` as Goal_Position (Mode 0). That uses
+the servo's inner PD. An outer `τ = Kp e + Kd ė` bridge is not this number.
+
+Calibration (`so101_follower_calib.json`, mid-range = `q = 0`, then both
+mechanical stops). Arm joints have ~±1.3–2 rad of recorded range. Lift's
+`min_ticks=0 max_ticks=4095` is an encoder wrap during the sweep; it does not
+clip this `kTarget`. Gripper is held at `q = 0` in software.
+
+Home before the stream: `q = (0.006, 0.006, 0.044, 0.017, 0.029, 0.006)`.
+
+Matched comparison, empty arm, `kTarget = (0.6, 0.7, -0.8, 0.5, 0.4, 0)`,
+1.0 s min-jerk, 4.0 s log, 200 Hz, 800 samples. Sim is existing
+`cpp_pd_empty_smooth.csv` (naive PD on the torque plant). Hardware is
+`hw_pd.csv` from the position-stream run. Settled window `t ≥ 1.5 s`, five
+arm joints (gripper excluded).
+
+| | pan | lift | elbow | wrist flex | wrist roll | arm mean |
+|-|-----|------|-------|------------|------------|----------|
+| sim PD SS RMS [rad] | 0.0004 | 0.0198 | 0.0196 | 0.0060 | 0.0041 | **0.0100** |
+| hw stream SS RMS [rad] | 0.0063 | 0.0056 | 0.0453 | 0.0015 | 0.0272 | **0.0172** |
+| hw final offset [rad] | +0.006 | −0.006 | −0.045 | +0.002 | +0.027 | |
+
+Hardware final `q = (0.594, 0.706, −0.755, 0.499, 0.373, 0.006)`. The stream
+settles by ~1.2 s and holds. This is **not** PD-vs-PD: sim must keep position
+error to hold gravity (lift/elbow droop ~0.02 rad); the real servos hold lift
+tighter and leave more elbow/wrist-roll miss. Hardware Cartesian EE is not
+logged (no Pinocchio on Ubuntu 26.04 apt).
+
+Full-window RMS vs the time-varying min-jerk (transit, not droop): sim arm
+mean 0.0173 rad, hardware 0.0567 rad — the real arm lags the 1 s reference
+more than sim PD.

@@ -179,6 +179,18 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
   if (!write_ticks(ticks)) fail_bus("sync_write");
 }
 
+void HardwareBackend::write_goal_q(const Eigen::VectorXd& q) {
+  if (q.size() != kDof) {
+    throw std::invalid_argument("q size");
+  }
+  std::array<int, kDof> ticks{};
+  for (int i = 0; i < kDof; ++i) {
+    const double qi = (i == 5) ? 0.0 : q[i];
+    ticks[i] = q_to_tick(i, qi);
+  }
+  if (!write_ticks(ticks)) fail_bus("sync_write");
+}
+
 void HardwareBackend::step() {
   const auto period = std::chrono::duration<double>(cfg_.dt);
   if (!period_armed_) {
@@ -233,9 +245,6 @@ void HardwareBackend::reset() {
   ticks_to_q(now, q_cmd_);
   std::printf("home q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)\n", q_cmd_[0], q_cmd_[1],
               q_cmd_[2], q_cmd_[3], q_cmd_[4], q_cmd_[5]);
-  const uint16_t ctrl_speed =
-      static_cast<uint16_t>(std::max(1, cfg_.goal_speed));
-  set_motion_profile(0, ctrl_speed);
   have_q_cmd_ = true;
   have_q_ = false;
   qdot_.setZero();

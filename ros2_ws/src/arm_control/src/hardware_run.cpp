@@ -1,10 +1,9 @@
-// Real-arm PD runner. No Pinocchio (not in Ubuntu 26.04 apt). Joint tracking
-// is the metric; EE columns in the CSV are left at zero.
+// Real-arm runner. Streams the same min-jerk q_des that homing uses
+// (STS3215 position mode). Joint tracking is the metric; EE columns are 0.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -12,25 +11,16 @@
 #include <Eigen/Dense>
 
 #include "arm_control/arm_types.hpp"
-#include "arm_control/control_loop.hpp"
-#include "arm_control/controller.hpp"
 #include "arm_control/hardware_backend.hpp"
-#include "arm_control/pd_controller.hpp"
 
-using arm_control::ControlLoop;
 using arm_control::HardwareBackend;
 using arm_control::kDof;
-using arm_control::PdController;
 using arm_control::Sample;
 
 namespace {
 
 const Eigen::VectorXd kTarget =
     (Eigen::VectorXd(kDof) << 0.6, 0.7, -0.8, 0.5, 0.4, 0.0).finished();
-const Eigen::VectorXd kKp =
-    (Eigen::VectorXd(kDof) << 40.0, 40.0, 25.0, 15.0, 8.0, 5.0).finished();
-const Eigen::VectorXd kKd =
-    (Eigen::VectorXd(kDof) << 3.0, 3.0, 2.0, 1.0, 0.6, 0.4).finished();
 constexpr double kDuration = 4.0;
 constexpr double kReferenceDuration = 1.0;
 
@@ -78,27 +68,34 @@ int main(int argc, char** argv) {
 
   try {
     HardwareBackend plant(cfg);
-    PdController controller(kKp, kKd);
-    ControlLoop loop(plant, controller, Eigen::VectorXd::Zero(kDof));
     std::printf(
-        "hardware PD  port=%s dt=%.4f k_servo=%.1f\n"
+        "hardware stream  port=%s dt=%.4f\n"
         "clear workspace — homes, then min-jerk to kTarget\n",
-        cfg.port.c_str(), plant.timestep(), cfg.k_servo);
-    loop.reset();
+        cfg.port.c_str(), plant.timestep());
+    plant.reset();
 
-    const double dt = loop.timestep();
+    const double dt = plant.timestep();
     const int steps = static_cast<int>(kDuration / dt);
     std::vector<Sample> log(steps);
+    Eigen::VectorXd q(kDof), qdot(kDof);
     Eigen::VectorXd q_ref(kDof), qdot_ref(kDof), qddot_ref(kDof);
     for (int i = 0; i < steps; ++i) {
       minimum_jerk_reference(i * dt, q_ref, qdot_ref, qddot_ref);
-      loop.set_reference(q_ref, qdot_ref, qddot_ref);
-      loop.step_once(log[i]);
+      plant.write_goal_q(q_ref);
+      plant.step();
+      plant.read_state(q, qdot);
+      Sample& s = log[i];
+      s.t = plant.time();
+      for (int j = 0; j < kDof; ++j) {
+        s.q[j] = q[j];
+        s.qd[j] = qdot[j];
+        s.tau[j] = 0.0;
+      }
     }
 
     std::ofstream out(csv_path);
     out.precision(17);
-    out << "# plant=hardware controller=pd\n";
+    out << "# plant=hardware controller=position_stream\n";
     out << "t";
     for (int i = 0; i < kDof; ++i) out << ",q" << i;
     for (int i = 0; i < kDof; ++i) out << ",qd" << i;
@@ -109,7 +106,7 @@ int main(int argc, char** argv) {
       for (int i = 0; i < kDof; ++i) out << ',' << s.q[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.qd[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.tau[i];
-      out << ',' << s.ee[0] << ',' << s.ee[1] << ',' << s.ee[2] << '\n';
+      out << ",0,0,0\n";
     }
     const Sample& last = log.back();
     std::printf("wrote %s  final q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)\n",

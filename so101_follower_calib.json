@@ -1,0 +1,8 @@
+{
+  "shoulder_pan": {"id": 1, "zero_ticks": 1925, "min_ticks": 894, "max_ticks": 3197, "sign": 1},
+  "shoulder_lift": {"id": 2, "zero_ticks": 2929, "min_ticks": 0, "max_ticks": 4095, "sign": 1},
+  "elbow_flex": {"id": 3, "zero_ticks": 1589, "min_ticks": 454, "max_ticks": 2644, "sign": 1},
+  "wrist_flex": {"id": 4, "zero_ticks": 1730, "min_ticks": 522, "max_ticks": 2829, "sign": 1},
+  "wrist_roll": {"id": 5, "zero_ticks": 2127, "min_ticks": 1283, "max_ticks": 3421, "sign": 1},
+  "gripper": {"id": 6, "zero_ticks": 1915, "min_ticks": 1758, "max_ticks": 3217, "sign": 1}
+}
