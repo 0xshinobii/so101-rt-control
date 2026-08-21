@@ -3,7 +3,9 @@
 FROM ros:jazzy-ros-base
 
 ARG MUJOCO_VERSION=3.10.0
-# Container runs under Docker Desktop on Apple Silicon -> linux/arm64.
+# Apple Silicon Docker Desktop: aarch64. Bare-metal i7 (Phase 7): x86_64.
+#   docker build -t so101-dev:jazzy --build-arg MUJOCO_ARCH=x86_64 \
+#     -f docker/Dockerfile docker
 ARG MUJOCO_ARCH=aarch64
 
 ENV DEBIAN_FRONTEND=noninteractive

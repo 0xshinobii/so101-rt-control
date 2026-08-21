@@ -3,6 +3,7 @@
 #endif
 #include "arm_control/hardware_backend.hpp"
 
+#include "arm_control/pinocchio_dynamics.hpp"
 #include "arm_control/rt_thread.hpp"
 
 #include <algorithm>
@@ -28,6 +29,7 @@ double min_jerk(double s) {
 
 HardwareBackend::HardwareBackend(Config cfg)
     : cfg_(std::move(cfg)),
+      dynamics_(std::make_unique<PinocchioDynamics>(cfg_.urdf_path)),
       calib_(load_so101_calib(cfg_.calib_path)),
       q_(Eigen::VectorXd::Zero(kDof)),
       qdot_(Eigen::VectorXd::Zero(kDof)),
@@ -191,6 +193,11 @@ void HardwareBackend::write_goal_q(const Eigen::VectorXd& q) {
   if (!write_ticks(ticks)) fail_bus("sync_write");
 }
 
+void HardwareBackend::gravity(const Eigen::VectorXd& q,
+                              Eigen::VectorXd& tau) const {
+  dynamics_->gravity(q, tau);
+}
+
 void HardwareBackend::step() {
   const auto period = std::chrono::duration<double>(cfg_.dt);
   if (!period_armed_) {
@@ -207,9 +214,8 @@ void HardwareBackend::step() {
 }
 
 Eigen::Vector3d HardwareBackend::ee_position() {
-  // Joint CSV is the hardware metric; Cartesian FK needs Pinocchio, which is
-  // not packaged for Ubuntu 26.04 yet. Filled with zeros on purpose.
-  return Eigen::Vector3d::Zero();
+  if (!have_q_) return Eigen::Vector3d::Zero();
+  return dynamics_->ee_position(q_);
 }
 
 void HardwareBackend::reset() {

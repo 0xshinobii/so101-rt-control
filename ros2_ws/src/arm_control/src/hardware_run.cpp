@@ -1,5 +1,6 @@
 // Real-arm runner. Streams the same min-jerk q_des that homing uses
-// (STS3215 position mode). Joint tracking is the metric; EE columns are 0.
+// (STS3215 position mode). Optional --gravity-ff adds g(q)/k_servo to q_des.
+// Joint tracking is the metric; EE columns are 0.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +45,7 @@ int main(int argc, char** argv) {
   HardwareBackend::Config cfg;
   cfg.calib_path = "so101_follower_calib.json";
   std::string csv_path = "hw_pd_so101.csv";
+  bool gravity_ff = false;
   for (int i = 1; i < argc; ++i) {
     const std::string opt = argv[i];
     auto need = [&]() -> const char* {
@@ -58,10 +60,14 @@ int main(int argc, char** argv) {
       csv_path = need();
     } else if (opt == "--k-servo") {
       cfg.k_servo = std::stod(need());
+    } else if (opt == "--urdf") {
+      cfg.urdf_path = need();
+    } else if (opt == "--gravity-ff") {
+      gravity_ff = true;
     } else {
       std::fprintf(stderr,
                    "usage: hardware_run [--port PATH] [--calib FILE] "
-                   "[--k-servo N] [--csv FILE]\n");
+                   "[--urdf FILE] [--k-servo N] [--gravity-ff] [--csv FILE]\n");
       return 2;
     }
   }
@@ -69,33 +75,54 @@ int main(int argc, char** argv) {
   try {
     HardwareBackend plant(cfg);
     std::printf(
-        "hardware stream  port=%s dt=%.4f\n"
+        "hardware stream  port=%s dt=%.4f gravity_ff=%s k_servo=%.1f\n"
         "clear workspace — homes, then min-jerk to kTarget\n",
-        cfg.port.c_str(), plant.timestep());
+        cfg.port.c_str(), plant.timestep(), gravity_ff ? "on" : "off",
+        cfg.k_servo);
     plant.reset();
 
     const double dt = plant.timestep();
     const int steps = static_cast<int>(kDuration / dt);
     std::vector<Sample> log(steps);
-    Eigen::VectorXd q(kDof), qdot(kDof);
+    Eigen::VectorXd q(kDof), qdot(kDof), g(kDof), q_goal(kDof);
     Eigen::VectorXd q_ref(kDof), qdot_ref(kDof), qddot_ref(kDof);
+    plant.read_state(q, qdot);
+    plant.gravity(q, g);
+    std::printf("g(home)=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f) N.m\n", g[0], g[1],
+                g[2], g[3], g[4], g[5]);
     for (int i = 0; i < steps; ++i) {
       minimum_jerk_reference(i * dt, q_ref, qdot_ref, qddot_ref);
-      plant.write_goal_q(q_ref);
+      q_goal = q_ref;
+      plant.gravity(q, g);
+      if (gravity_ff) {
+        for (int j = 0; j < kDof; ++j) {
+          const double dq = std::clamp(g[j] / cfg.k_servo, -cfg.max_lead_q,
+                                       cfg.max_lead_q);
+          q_goal[j] += dq;
+        }
+        q_goal[5] = 0.0;
+      }
+      plant.write_goal_q(q_goal);
       plant.step();
       plant.read_state(q, qdot);
+      const Eigen::Vector3d ee = plant.ee_position();
       Sample& s = log[i];
       s.t = plant.time();
       for (int j = 0; j < kDof; ++j) {
         s.q[j] = q[j];
         s.qd[j] = qdot[j];
-        s.tau[j] = 0.0;
+        s.tau[j] = g[j];
       }
+      s.ee[0] = ee.x();
+      s.ee[1] = ee.y();
+      s.ee[2] = ee.z();
     }
 
     std::ofstream out(csv_path);
     out.precision(17);
-    out << "# plant=hardware controller=position_stream\n";
+    out << "# plant=hardware controller="
+        << (gravity_ff ? "position_stream+gravity_ff" : "position_stream")
+        << "\n";
     out << "t";
     for (int i = 0; i < kDof; ++i) out << ",q" << i;
     for (int i = 0; i < kDof; ++i) out << ",qd" << i;
@@ -106,12 +133,14 @@ int main(int argc, char** argv) {
       for (int i = 0; i < kDof; ++i) out << ',' << s.q[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.qd[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.tau[i];
-      out << ",0,0,0\n";
+      out << ',' << s.ee[0] << ',' << s.ee[1] << ',' << s.ee[2] << '\n';
     }
     const Sample& last = log.back();
-    std::printf("wrote %s  final q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)\n",
-                csv_path.c_str(), last.q[0], last.q[1], last.q[2], last.q[3],
-                last.q[4], last.q[5]);
+    std::printf(
+        "wrote %s  final q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f) "
+        "ee=(%.4f,%.4f,%.4f)\n",
+        csv_path.c_str(), last.q[0], last.q[1], last.q[2], last.q[3],
+        last.q[4], last.q[5], last.ee[0], last.ee[1], last.ee[2]);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

@@ -73,16 +73,17 @@ add_executable(home_so101 src/home_so101.cpp src/feetech_bus.cpp)
 target_include_directories(home_so101 PRIVATE include)
 install(TARGETS home_so101 DESTINATION lib/${PROJECT_NAME})
 
-# Phase 7 hardware plant (no MuJoCo).
+# Phase 7 hardware plant (Pinocchio FK/g(q); no MuJoCo).
 add_executable(hardware_run
   src/hardware_run.cpp
   src/hardware_backend.cpp
   src/feetech_bus.cpp
+  src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
   src/control_loop.cpp
 )
 target_include_directories(hardware_run PRIVATE include)
-target_link_libraries(hardware_run PRIVATE Eigen3::Eigen pthread)
+target_link_libraries(hardware_run PRIVATE Eigen3::Eigen pinocchio::pinocchio pthread)
 install(TARGETS hardware_run DESTINATION lib/${PROJECT_NAME})
 
 # --- Step 4: ROS 2 node (added when its deps are available) -------------------
