@@ -72,8 +72,10 @@ void HardwareBackend::enable_torque_at_current() {
     throw std::runtime_error("cannot read pose before enabling torque");
   }
   write_ticks(ticks);
-  const uint8_t acc = 0;  // 0 = max; a slow ramp resets if Goal_Position updates at 200 Hz
-  const uint8_t speed[2] = {0, 0};
+  const uint8_t acc = 0;  // 0 = max; needed so 200 Hz Goal_Position writes still move
+  const uint16_t sp = static_cast<uint16_t>(std::max(1, cfg_.goal_speed));
+  const uint8_t speed[2] = {static_cast<uint8_t>(sp & 0xFF),
+                            static_cast<uint8_t>((sp >> 8) & 0xFF)};
   for (uint8_t id : ids_) {
     bus_.write(id, kAddrAcceleration, &acc, 1);
     bus_.write(id, kAddrGoalSpeed, speed, 2);
@@ -164,6 +166,8 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
     double q_hi = c.sign * (c.max_ticks - c.zero_ticks) * kRadPerTick;
     if (q_lo > q_hi) std::swap(q_lo, q_hi);
     q_cmd_[i] = std::clamp(q_cmd_[i], q_lo, q_hi);
+    q_cmd_[i] = std::clamp(q_cmd_[i], q_[i] - cfg_.max_lead_q,
+                           q_[i] + cfg_.max_lead_q);
   }
   q_cmd_[5] = 0.0;  // hold gripper at calibrated zero
   for (int i = 0; i < kDof; ++i) ticks[i] = q_to_tick(i, q_cmd_[i]);

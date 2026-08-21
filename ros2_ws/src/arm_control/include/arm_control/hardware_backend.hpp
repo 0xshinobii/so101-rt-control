@@ -21,7 +21,9 @@ public:
     std::string calib_path;
     double dt = 0.005;           // frozen f_hw = 200 Hz
     double k_servo = 50.0;       // N·m/rad; gravity-hold will retune
-    double max_delta_q = 0.03;   // rad per tick
+    double max_delta_q = 0.03;   // rad per control step
+    double max_lead_q = 0.12;    // rad; Goal_Position stays near present q
+    int goal_speed = 40;         // Feetech units; 0 = unlimited (unsafe)
     int64_t rx_timeout_ns = 5130000;
     int max_bus_fails = 3;
     double home_duration = 4.0;
