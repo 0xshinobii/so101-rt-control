@@ -48,6 +48,7 @@ public:
 private:
   void disable_torque();
   void enable_torque_at_current();
+  void set_motion_profile(uint8_t acc, uint16_t speed);
   bool read_ticks(std::array<int, kDof>& ticks);
   bool write_ticks(const std::array<int, kDof>& ticks);
   void ticks_to_q(const std::array<int, kDof>& ticks, Eigen::VectorXd& q) const;

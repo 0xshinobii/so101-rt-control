@@ -72,17 +72,22 @@ void HardwareBackend::enable_torque_at_current() {
     throw std::runtime_error("cannot read pose before enabling torque");
   }
   write_ticks(ticks);
-  const uint8_t acc = 0;  // 0 = max; needed so 200 Hz Goal_Position writes still move
-  const uint16_t sp = static_cast<uint16_t>(std::max(1, cfg_.goal_speed));
-  const uint8_t speed[2] = {static_cast<uint8_t>(sp & 0xFF),
-                            static_cast<uint8_t>((sp >> 8) & 0xFF)};
+  // Homing uses the same profile as home_so101 (acc=30, uncapped speed).
+  set_motion_profile(30, 0);
   for (uint8_t id : ids_) {
-    bus_.write(id, kAddrAcceleration, &acc, 1);
-    bus_.write(id, kAddrGoalSpeed, speed, 2);
     const uint8_t on = 1;
     if (!bus_.write(id, FeetechBus::kAddrTorqueEnable, &on, 1)) {
       throw std::runtime_error("torque enable failed");
     }
+  }
+}
+
+void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {
+  const uint8_t sp[2] = {static_cast<uint8_t>(speed & 0xFF),
+                         static_cast<uint8_t>((speed >> 8) & 0xFF)};
+  for (uint8_t id : ids_) {
+    bus_.write(id, kAddrAcceleration, &acc, 1);
+    bus_.write(id, kAddrGoalSpeed, sp, 2);
   }
 }
 
@@ -226,6 +231,11 @@ void HardwareBackend::reset() {
     throw std::runtime_error("reset: read failed after home");
   }
   ticks_to_q(now, q_cmd_);
+  std::printf("home q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)\n", q_cmd_[0], q_cmd_[1],
+              q_cmd_[2], q_cmd_[3], q_cmd_[4], q_cmd_[5]);
+  const uint16_t ctrl_speed =
+      static_cast<uint16_t>(std::max(1, cfg_.goal_speed));
+  set_motion_profile(0, ctrl_speed);
   have_q_cmd_ = true;
   have_q_ = false;
   qdot_.setZero();
