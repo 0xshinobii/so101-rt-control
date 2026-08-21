@@ -1,7 +1,7 @@
 // The plant abstraction: the arm, whether simulated or real hardware. Swap the
 // backend and controllers stay unchanged -- the orthogonality spine. Torque in,
 // state out; the backend is responsible for realizing the torque (MuJoCo applies
-// it directly; a future hardware backend runs the torque->position bridge).
+// it directly; HardwareBackend uses a torque-to-position bridge).
 #pragma once
 #include <Eigen/Dense>
 

@@ -3,6 +3,8 @@
 #include <stdexcept>
 
 #include <pinocchio/algorithm/crba.hpp>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
@@ -40,6 +42,19 @@ PinocchioDynamics::PinocchioDynamics(const std::string& urdf_path,
   pin_q_ = Eigen::VectorXd::Zero(model_.nq);
   pin_v_ = Eigen::VectorXd::Zero(model_.nv);
   pin_a_ = Eigen::VectorXd::Zero(model_.nv);
+
+  const char* ee_names[] = {"gripper_frame_link", "gripper_frame_joint",
+                            "gripperframe"};
+  for (const char* name : ee_names) {
+    if (model_.existFrame(name)) {
+      ee_frame_id_ = static_cast<int>(model_.getFrameId(name));
+      break;
+    }
+  }
+  if (ee_frame_id_ < 0) {
+    throw std::runtime_error(
+        "Pinocchio EE frame not found (tried gripper_frame_link)");
+  }
 }
 
 void PinocchioDynamics::map_configuration(const Eigen::VectorXd& q) {
@@ -103,6 +118,13 @@ void PinocchioDynamics::inverse_dynamics(const Eigen::VectorXd& q,
   map_velocity(qddot, pin_a_);
   map_torque(pinocchio::rnea(model_, *data_, pin_q_, pin_v_, pin_a_),
              tau_out);
+}
+
+Eigen::Vector3d PinocchioDynamics::ee_position(const Eigen::VectorXd& q) {
+  map_configuration(q);
+  pinocchio::forwardKinematics(model_, *data_, pin_q_);
+  pinocchio::updateFramePlacements(model_, *data_);
+  return data_->oMf[static_cast<size_t>(ee_frame_id_)].translation();
 }
 
 }  // namespace arm_control

@@ -29,6 +29,7 @@ public:
                         const Eigen::VectorXd& qdot,
                         const Eigen::VectorXd& qddot,
                         Eigen::VectorXd& tau_out);
+  Eigen::Vector3d ee_position(const Eigen::VectorXd& q);
 
   int dof() const { return kDof; }
   const pinocchio::Model& model() const { return model_; }
@@ -44,6 +45,7 @@ private:
   std::unique_ptr<pinocchio::Data> data_;
   std::array<int, kDof> q_index_{};
   std::array<int, kDof> v_index_{};
+  int ee_frame_id_ = -1;
   Eigen::VectorXd pin_q_;
   Eigen::VectorXd pin_v_;
   Eigen::VectorXd pin_a_;
