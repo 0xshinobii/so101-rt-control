@@ -45,9 +45,10 @@ add_executable(validate_dynamics src/validate_dynamics.cpp)
 target_link_libraries(validate_dynamics arm_core)
 install(TARGETS validate_dynamics DESTINATION lib/${PROJECT_NAME})
 
-add_executable(validate_payload_estimator src/validate_payload_estimator.cpp)
-target_link_libraries(validate_payload_estimator arm_core)
-install(TARGETS validate_payload_estimator DESTINATION lib/${PROJECT_NAME})
+add_executable(kservo_from_csv ${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/kservo_from_csv.cpp)
+target_include_directories(kservo_from_csv PRIVATE include)
+target_link_libraries(kservo_from_csv PRIVATE arm_core)
+install(TARGETS kservo_from_csv DESTINATION lib/${PROJECT_NAME})
 
 # --- Steps 1-3: headless runner (bare executable, no ROS dependency) ----------
 add_executable(main_headless src/main_headless.cpp)
