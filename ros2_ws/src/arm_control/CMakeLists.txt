@@ -74,6 +74,10 @@ add_executable(home_so101 src/home_so101.cpp src/feetech_bus.cpp)
 target_include_directories(home_so101 PRIVATE include)
 install(TARGETS home_so101 DESTINATION lib/${PROJECT_NAME})
 
+add_executable(torque_off_so101 src/torque_off_so101.cpp src/feetech_bus.cpp)
+target_include_directories(torque_off_so101 PRIVATE include)
+install(TARGETS torque_off_so101 DESTINATION lib/${PROJECT_NAME})
+
 # Phase 7 hardware plant (Pinocchio FK/g(q); no MuJoCo).
 add_executable(hardware_run
   src/hardware_run.cpp
