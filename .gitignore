@@ -18,6 +18,8 @@ build/
 *.csv
 !docs/figures/*.svg
 !docs/figures/*.png
+# Hardware logs are evidence, not output: RESULTS.md cites them by name.
+!docs/data/*.csv
 
 # colcon / ROS 2 workspace build artifacts
 ros2_ws/build/

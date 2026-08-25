@@ -4,7 +4,7 @@
   <name>arm_bringup</name>
   <version>0.2.0</version>
   <description>Launch files and parameters for the SO-101 arm control stack.</description>
-  <maintainer email="dev@example.com">atul</maintainer>
+  <maintainer email="21087753+asquare08@users.noreply.github.com">Atul Agarwal</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

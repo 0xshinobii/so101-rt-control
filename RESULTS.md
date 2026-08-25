@@ -168,15 +168,6 @@ being chosen before measurement. `tools/phase5_bench.py` also retains 50% gap
 recovery only as a bug-detection floor; the measured recovery above is the
 reported result.
 
-## Phase 6 — Momentum DOB (sim only, incomplete)
-
-The archived sweep (`phase6_frequency_response.csv`) gives DOB / baseline RMS
-ratios **0.108 / 0.400 / 0.448** at **0.5 / 2 / 12 Hz**. These do not trace a
-first-order rolloff at the configured `dob_bandwidth_hz = 8.0`: 2 Hz is worse
-and 12 Hz better than that corner predicts, and the discrepancy is unresolved.
-Phase 6 was never integrated into the retained benchmark suite and never
-reached hardware. It is a deliberate scope cut.
-
 ## Phase 3 — PREEMPT_RT wakeup jitter
 
 Measured 2026-08-20 on the Ubuntu 26.04 box (i7-7700, 16 GB) after Phases 4–5.
@@ -579,5 +570,4 @@ two-run spread; unseen-mass interpolation is not yet tested. Elbow
 tracking-null on 70 g is 0.058 kg; lift says ~0.155 kg. Highest-value
 remaining hardware is the **locked-rotor** check (reg 69 vs ammeter + stall
 current), followed by fixed-geometry repeatability. Variable load in one
-tracking run is out of scope. Phase 6 (momentum DOB) remains sim-only,
-incomplete, and unresolved at its configured 8 Hz corner.
+tracking run is out of scope.
