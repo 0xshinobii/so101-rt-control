@@ -31,6 +31,12 @@ public:
     int64_t rx_timeout_ns = 5130000;
     int max_bus_fails = 3;
     double home_duration = 4.0;
+    double gripper_q = 0.0;      // held during home + tracking
+    bool gripper_closed = false; // true: hold calib min_ticks
+    int gripper_torque_limit = 200;  // 0–1000; 200 = 20% (70 g pinch)
+    double current_lsb_a = 0.0065;  // STS3215 Present_Current
+    // N·m per amp, joint frame. Gripper 0: jaw current is not payload gravity.
+    std::array<double, kDof> kt_nm_per_a = {1.0, 1.0, 1.0, 1.0, 1.0, 0.0};
   };
 
   explicit HardwareBackend(Config cfg);
@@ -43,10 +49,16 @@ public:
   void apply_torque(const Eigen::VectorXd& tau) override;
   void write_goal_q(const Eigen::VectorXd& q);
   void gravity(const Eigen::VectorXd& q, Eigen::VectorXd& tau) const;
+  void move_to(const Eigen::VectorXd& q_end, double duration);
+  void set_motion_profile(uint8_t acc, uint16_t speed);
+  bool read_current_amps(Eigen::VectorXd& amps);
+  void current_to_torque(const Eigen::VectorXd& amps,
+                         Eigen::VectorXd& tau) const;
   void step() override;
   Eigen::Vector3d ee_position() override;
   void reset() override;
 
+  double gripper_q() const { return cfg_.gripper_q; }
   int dof() const override { return kDof; }
   double timestep() const override { return cfg_.dt; }
   double time() const override { return t_; }
@@ -54,7 +66,8 @@ public:
 private:
   void disable_torque();
   void enable_torque_at_current();
-  void set_motion_profile(uint8_t acc, uint16_t speed);
+  void set_torque_limit(uint16_t limit);
+  void squeeze_gripper();
   bool read_ticks(std::array<int, kDof>& ticks);
   bool write_ticks(const std::array<int, kDof>& ticks);
   void ticks_to_q(const std::array<int, kDof>& ticks, Eigen::VectorXd& q) const;
@@ -72,6 +85,7 @@ private:
   bool have_q_ = false;
   bool have_q_cmd_ = false;
   int bus_fails_ = 0;
+  int gripper_hold_tick_ = -1;
   double t_ = 0.0;
   bool period_armed_ = false;
   std::chrono::steady_clock::time_point next_wakeup_{};

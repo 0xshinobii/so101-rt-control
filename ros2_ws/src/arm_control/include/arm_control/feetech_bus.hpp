@@ -25,8 +25,11 @@ public:
   static constexpr uint8_t kBroadcastId = 0xFE;
   static constexpr uint8_t kAddrTorqueEnable = 40;
   static constexpr uint8_t kAddrGoalPosition = 42;
+  static constexpr uint8_t kAddrTorqueLimit = 48;  // 2 B, 1000 = 100%
   static constexpr uint8_t kAddrPresentPosition = 56;
   static constexpr uint8_t kAddrPresentSpeed = 58;
+  static constexpr uint8_t kAddrPresentLoad = 60;     // 2 B, PWM duty; not amps
+  static constexpr uint8_t kAddrPresentCurrent = 69;  // 2 B, sign-magnitude, 6.5 mA/LSB
 
   FeetechBus() = default;
   ~FeetechBus();

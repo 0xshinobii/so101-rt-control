@@ -78,6 +78,16 @@ add_executable(torque_off_so101 src/torque_off_so101.cpp src/feetech_bus.cpp)
 target_include_directories(torque_off_so101 PRIVATE include)
 install(TARGETS torque_off_so101 DESTINATION lib/${PROJECT_NAME})
 
+add_executable(gravity_id
+  src/gravity_id.cpp
+  src/hardware_backend.cpp
+  src/feetech_bus.cpp
+  src/pinocchio_dynamics.cpp
+)
+target_include_directories(gravity_id PRIVATE include)
+target_link_libraries(gravity_id PRIVATE Eigen3::Eigen pinocchio::pinocchio pthread)
+install(TARGETS gravity_id DESTINATION lib/${PROJECT_NAME})
+
 # Phase 7 hardware plant (Pinocchio FK/g(q); no MuJoCo).
 add_executable(hardware_run
   src/hardware_run.cpp
@@ -85,7 +95,9 @@ add_executable(hardware_run
   src/feetech_bus.cpp
   src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
-  src/control_loop.cpp
+  src/computed_torque_controller.cpp
+  src/payload_mass_rls.cpp
+  src/adaptive_computed_torque_controller.cpp
 )
 target_include_directories(hardware_run PRIVATE include)
 target_link_libraries(hardware_run PRIVATE Eigen3::Eigen pinocchio::pinocchio pthread)

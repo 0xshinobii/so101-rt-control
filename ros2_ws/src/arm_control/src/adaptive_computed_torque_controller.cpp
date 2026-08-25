@@ -1,5 +1,7 @@
 #include "arm_control/adaptive_computed_torque_controller.hpp"
 
+#include "arm_control/arm_types.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -90,7 +92,7 @@ void AdaptiveComputedTorqueController::compute(
     const Eigen::VectorXd& qddot_des, Eigen::VectorXd& tau_out) {
   // tau[k-1] produced qdot[k] - qdot[k-1]. Evaluate the measured inverse
   // dynamics and regressor at the stored k-1 state to preserve that alignment.
-  if (have_previous_sample_) {
+  if (use_accel_rls_ && have_previous_sample_) {
     qdd_measured_.array() =
         (qdot - previous_qdot_).array() / timestep_;
     empty_dynamics_.inverse_dynamics(previous_q_, previous_qdot_,
@@ -138,6 +140,53 @@ void AdaptiveComputedTorqueController::compute(
   have_previous_sample_ = true;
   ++sample_count_;
   if (saturated) ++saturated_samples_;
+}
+
+void AdaptiveComputedTorqueController::update_from_measured_torque(
+    const Eigen::VectorXd& q, const Eigen::VectorXd& tau_meas) {
+  if (q.size() != kDof || tau_meas.size() != kDof) {
+    throw std::invalid_argument("static-gravity update size");
+  }
+  empty_dynamics_.gravity(q, empty_measured_torque_);
+  reference_payload_dynamics_.gravity(q, payload_measured_torque_);
+  measured_regressor_.array() =
+      (payload_measured_torque_ - empty_measured_torque_).array() *
+      inverse_reference_payload_mass_;
+  observed_extra_torque_.array() =
+      tau_meas.array() - empty_measured_torque_.array();
+  measured_regressor_[5] = 0.0;
+  observed_extra_torque_[5] = 0.0;
+  estimator_.update(measured_regressor_, observed_extra_torque_);
+}
+
+double AdaptiveComputedTorqueController::estimate_static_mass(
+    const Eigen::VectorXd& q, const Eigen::VectorXd& tau_meas) {
+  if (q.size() != kDof || tau_meas.size() != kDof) {
+    throw std::invalid_argument("static-gravity estimate size");
+  }
+  empty_dynamics_.gravity(q, empty_measured_torque_);
+  reference_payload_dynamics_.gravity(q, payload_measured_torque_);
+  measured_regressor_.array() =
+      (payload_measured_torque_ - empty_measured_torque_).array() *
+      inverse_reference_payload_mass_;
+  observed_extra_torque_.array() =
+      tau_meas.array() - empty_measured_torque_.array();
+  measured_regressor_[5] = 0.0;
+  observed_extra_torque_[5] = 0.0;
+  const double den = measured_regressor_.squaredNorm();
+  if (den < 1e-8) {
+    throw std::runtime_error("gravity regressor ~0 at this pose");
+  }
+  return measured_regressor_.dot(observed_extra_torque_) / den;
+}
+
+void AdaptiveComputedTorqueController::add_static_observation(
+    const Eigen::VectorXd& q, const Eigen::VectorXd& tau_meas, double& num,
+    double& den) {
+  const double m = estimate_static_mass(q, tau_meas);
+  const double d = measured_regressor_.squaredNorm();
+  num += m * d;
+  den += d;
 }
 
 void AdaptiveComputedTorqueController::reset() {

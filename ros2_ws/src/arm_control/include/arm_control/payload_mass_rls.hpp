@@ -26,6 +26,7 @@ public:
   bool update(const Eigen::VectorXd& payload_regressor,
               const Eigen::VectorXd& observed_extra_torque);
   void reset();
+  void set_mass(double mass);
 
   // mass() is the physically projected value used by control. raw_mass()
   // retains the signed identification result so empty-arm model bias remains

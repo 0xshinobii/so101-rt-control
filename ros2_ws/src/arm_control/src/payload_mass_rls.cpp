@@ -77,4 +77,9 @@ void PayloadMassRlsEstimator::reset() {
   rejected_updates_ = 0;
 }
 
+void PayloadMassRlsEstimator::set_mass(double mass) {
+  raw_mass_ = mass;
+  mass_ = std::clamp(raw_mass_, config_.min_mass, config_.max_mass);
+}
+
 }  // namespace arm_control

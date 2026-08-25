@@ -36,6 +36,19 @@ public:
   std::size_t estimator_updates() const {
     return estimator_.accepted_updates();
   }
+
+  // Hardware: skip q̈ RLS. Call update_from_measured_torque on quiet holds
+  // with Present_Current as τ. Sim keeps the default (measured acceleration).
+  void set_use_acceleration_rls(bool enabled) { use_accel_rls_ = enabled; }
+  void update_from_measured_torque(const Eigen::VectorXd& q,
+                                   const Eigen::VectorXd& tau_meas);
+  double estimate_static_mass(const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& tau_meas);
+  void add_static_observation(const Eigen::VectorXd& q,
+                              const Eigen::VectorXd& tau_meas, double& num,
+                              double& den);
+  void set_payload_mass(double mass) { estimator_.set_mass(mass); }
+
   const Eigen::VectorXd& raw_peak_torque() const { return raw_peak_torque_; }
   const Eigen::VectorXd& applied_peak_torque() const {
     return applied_peak_torque_;
@@ -71,6 +84,7 @@ private:
   double timestep_;
   double torque_limit_;
   bool have_previous_sample_ = false;
+  bool use_accel_rls_ = true;
   std::size_t saturated_samples_ = 0;
   std::size_t sample_count_ = 0;
 };

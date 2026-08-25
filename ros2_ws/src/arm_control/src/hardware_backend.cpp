@@ -7,9 +7,12 @@
 #include "arm_control/rt_thread.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <thread>
 
 namespace arm_control {
 namespace {
@@ -18,6 +21,13 @@ constexpr uint8_t kAddrAcceleration = 41;
 constexpr uint8_t kAddrGoalSpeed = 46;
 constexpr double kTicksPerRev = 4096.0;
 constexpr double kRadPerTick = 2.0 * M_PI / kTicksPerRev;
+
+double decode_sts_present_current_a(uint8_t lo, uint8_t hi, double lsb) {
+  const uint16_t raw = static_cast<uint16_t>(lo | (static_cast<uint16_t>(hi) << 8));
+  const int mag = static_cast<int>(raw & 0x7FFF);
+  const int counts = (raw & 0x8000u) ? -mag : mag;
+  return static_cast<double>(counts) * lsb;
+}
 
 double min_jerk(double s) {
   s = std::clamp(s, 0.0, 1.0);
@@ -38,6 +48,17 @@ HardwareBackend::HardwareBackend(Config cfg)
   for (int i = 0; i < kDof; ++i) ids_[i] = static_cast<uint8_t>(calib_[i].id);
   bus_.open(cfg_.port, cfg_.baud);
   bus_.set_rx_timeout_ns(cfg_.rx_timeout_ns);
+  if (cfg_.gripper_closed) {
+    const auto& g = calib_[5];
+    gripper_hold_tick_ = g.min_ticks;
+    cfg_.gripper_q =
+        g.sign * (g.min_ticks - g.zero_ticks) * kRadPerTick;
+  }
+  std::printf("gripper hold q=%.3f rad  tick=%d  torque_limit=%d%s\n",
+              cfg_.gripper_q,
+              gripper_hold_tick_ >= 0 ? gripper_hold_tick_ : -1,
+              cfg_.gripper_torque_limit,
+              cfg_.gripper_closed ? " (min_ticks)" : "");
   for (int i = 0; i < kDof; ++i) {
     if (!bus_.ping(ids_[i])) {
       throw std::runtime_error("ping failed for id " +
@@ -76,12 +97,39 @@ void HardwareBackend::enable_torque_at_current() {
   write_ticks(ticks);
   // Homing uses the same profile as home_so101 (acc=30, uncapped speed).
   set_motion_profile(30, 0);
+  set_torque_limit(1000);
   for (uint8_t id : ids_) {
     const uint8_t on = 1;
     if (!bus_.write(id, FeetechBus::kAddrTorqueEnable, &on, 1)) {
       throw std::runtime_error("torque enable failed");
     }
   }
+}
+
+void HardwareBackend::set_torque_limit(uint16_t limit) {
+  const uint8_t arm[2] = {static_cast<uint8_t>(limit & 0xFF),
+                          static_cast<uint8_t>((limit >> 8) & 0xFF)};
+  const uint16_t g_lim = static_cast<uint16_t>(
+      std::clamp(cfg_.gripper_torque_limit, 1, 1000));
+  const uint8_t grip[2] = {static_cast<uint8_t>(g_lim & 0xFF),
+                           static_cast<uint8_t>((g_lim >> 8) & 0xFF)};
+  for (int i = 0; i < kDof; ++i) {
+    bus_.write(ids_[i], FeetechBus::kAddrTorqueLimit,
+               (i == 5) ? grip : arm, 2);
+  }
+}
+
+void HardwareBackend::squeeze_gripper() {
+  if (gripper_hold_tick_ < 0) return;
+  std::array<int, kDof> ticks{};
+  if (!read_ticks(ticks)) {
+    throw std::runtime_error("squeeze: read failed");
+  }
+  ticks[5] = gripper_hold_tick_;
+  if (!write_ticks(ticks)) {
+    throw std::runtime_error("squeeze: write failed");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
 }
 
 void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {
@@ -108,7 +156,9 @@ bool HardwareBackend::read_ticks(std::array<int, kDof>& ticks) {
 bool HardwareBackend::write_ticks(const std::array<int, kDof>& ticks) {
   std::vector<uint8_t> data(12);
   for (int i = 0; i < kDof; ++i) {
-    const int t = std::clamp(ticks[i], 0, 4095);
+    const int t = std::clamp(
+        (i == 5 && gripper_hold_tick_ >= 0) ? gripper_hold_tick_ : ticks[i], 0,
+        4095);
     data[2 * i] = static_cast<uint8_t>(t & 0xFF);
     data[2 * i + 1] = static_cast<uint8_t>((t >> 8) & 0xFF);
   }
@@ -176,7 +226,7 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
     q_cmd_[i] = std::clamp(q_cmd_[i], q_[i] - cfg_.max_lead_q,
                            q_[i] + cfg_.max_lead_q);
   }
-  q_cmd_[5] = 0.0;  // hold gripper at calibrated zero
+  q_cmd_[5] = cfg_.gripper_q;
   for (int i = 0; i < kDof; ++i) ticks[i] = q_to_tick(i, q_cmd_[i]);
   if (!write_ticks(ticks)) fail_bus("sync_write");
 }
@@ -187,7 +237,7 @@ void HardwareBackend::write_goal_q(const Eigen::VectorXd& q) {
   }
   std::array<int, kDof> ticks{};
   for (int i = 0; i < kDof; ++i) {
-    const double qi = (i == 5) ? 0.0 : q[i];
+    const double qi = (i == 5) ? cfg_.gripper_q : q[i];
     ticks[i] = q_to_tick(i, qi);
   }
   if (!write_ticks(ticks)) fail_bus("sync_write");
@@ -220,30 +270,10 @@ Eigen::Vector3d HardwareBackend::ee_position() {
 
 void HardwareBackend::reset() {
   enable_torque_at_current();
-  std::array<int, kDof> start{};
-  if (!read_ticks(start)) {
-    throw std::runtime_error("reset: read failed");
-  }
-  Eigen::VectorXd q_start(kDof);
-  ticks_to_q(start, q_start);
-  const int rate = 50;
-  const int steps =
-      std::max(1, static_cast<int>(cfg_.home_duration * rate));
-  const auto period = std::chrono::milliseconds(1000 / rate);
-  auto next = std::chrono::steady_clock::now();
-  for (int k = 0; k <= steps; ++k) {
-    const double s = min_jerk(static_cast<double>(k) / steps);
-    std::array<int, kDof> cmd{};
-    for (int i = 0; i < kDof; ++i) {
-      const double q = (1.0 - s) * q_start[i];
-      cmd[i] = q_to_tick(i, q);
-    }
-    if (!write_ticks(cmd)) {
-      throw std::runtime_error("reset: sync_write failed");
-    }
-    next += period;
-    sleep_until_monotonic(next);
-  }
+  squeeze_gripper();
+  Eigen::VectorXd home = Eigen::VectorXd::Zero(kDof);
+  home[5] = cfg_.gripper_q;
+  move_to(home, cfg_.home_duration);
   std::array<int, kDof> now{};
   if (!read_ticks(now)) {
     throw std::runtime_error("reset: read failed after home");
@@ -251,12 +281,75 @@ void HardwareBackend::reset() {
   ticks_to_q(now, q_cmd_);
   std::printf("home q=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)\n", q_cmd_[0], q_cmd_[1],
               q_cmd_[2], q_cmd_[3], q_cmd_[4], q_cmd_[5]);
+  // Stream a smooth min-jerk Goal_Position. acc>0 restarts the ramp every
+  // 5 ms rewrite and crawls; speed=40 was ~0.06 rad/s and missed kTarget.
+  set_motion_profile(0, 0);
+  set_torque_limit(1000);
+  squeeze_gripper();
   have_q_cmd_ = true;
   have_q_ = false;
   qdot_.setZero();
   t_ = 0.0;
   period_armed_ = false;
   bus_fails_ = 0;
+}
+
+void HardwareBackend::move_to(const Eigen::VectorXd& q_end_in, double duration) {
+  if (q_end_in.size() != kDof) {
+    throw std::invalid_argument("q size");
+  }
+  Eigen::VectorXd q_end = q_end_in;
+  q_end[5] = cfg_.gripper_q;
+  std::array<int, kDof> start{};
+  if (!read_ticks(start)) {
+    throw std::runtime_error("move_to: read failed");
+  }
+  Eigen::VectorXd q_start(kDof);
+  ticks_to_q(start, q_start);
+  const int rate = 50;
+  const int steps = std::max(1, static_cast<int>(duration * rate));
+  const auto period = std::chrono::milliseconds(1000 / rate);
+  auto next = std::chrono::steady_clock::now();
+  for (int k = 0; k <= steps; ++k) {
+    const double s = min_jerk(static_cast<double>(k) / steps);
+    std::array<int, kDof> cmd{};
+    for (int i = 0; i < kDof; ++i) {
+      const double q = (1.0 - s) * q_start[i] + s * q_end[i];
+      cmd[i] = q_to_tick(i, q);
+    }
+    if (!write_ticks(cmd)) {
+      throw std::runtime_error("move_to: sync_write failed");
+    }
+    next += period;
+    sleep_until_monotonic(next);
+  }
+  have_q_ = false;
+  have_q_cmd_ = true;
+  q_cmd_ = q_end;
+  qdot_.setZero();
+  period_armed_ = false;
+}
+
+bool HardwareBackend::read_current_amps(Eigen::VectorXd& amps) {
+  amps.resize(kDof);
+  std::vector<uint8_t> raw;
+  if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentCurrent, 2, raw) ||
+      raw.size() < 12) {
+    return false;
+  }
+  for (int i = 0; i < kDof; ++i) {
+    amps[i] = decode_sts_present_current_a(raw[2 * i], raw[2 * i + 1],
+                                           cfg_.current_lsb_a);
+  }
+  return true;
+}
+
+void HardwareBackend::current_to_torque(const Eigen::VectorXd& amps,
+                                        Eigen::VectorXd& tau) const {
+  tau.resize(kDof);
+  for (int i = 0; i < kDof; ++i) {
+    tau[i] = static_cast<double>(calib_[i].sign) * cfg_.kt_nm_per_a[i] * amps[i];
+  }
 }
 
 }  // namespace arm_control
