@@ -45,6 +45,14 @@ add_executable(validate_dynamics src/validate_dynamics.cpp)
 target_link_libraries(validate_dynamics arm_core)
 install(TARGETS validate_dynamics DESTINATION lib/${PROJECT_NAME})
 
+add_executable(validate_payload_estimator
+  src/validate_payload_estimator.cpp
+  src/payload_mass_rls.cpp
+)
+target_include_directories(validate_payload_estimator PRIVATE include)
+target_link_libraries(validate_payload_estimator PRIVATE Eigen3::Eigen)
+install(TARGETS validate_payload_estimator DESTINATION lib/${PROJECT_NAME})
+
 add_executable(kservo_from_csv ${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/kservo_from_csv.cpp)
 target_include_directories(kservo_from_csv PRIVATE include)
 target_link_libraries(kservo_from_csv PRIVATE arm_core)

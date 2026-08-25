@@ -143,6 +143,8 @@ int main(int argc, char** argv) {
   double reference_payload_mass = 0.20;
   double payload_g = 70.0;
   double rls_lambda = 0.99;
+  double mass_cal_scale = 1.0;
+  double mass_cal_offset = 0.0;
   bool have_kt = false;
   bool have_mass = false;
   double freeze_mass = 0.0;
@@ -178,6 +180,10 @@ int main(int argc, char** argv) {
       have_kt = true;
     } else if (opt == "--lambda") {
       rls_lambda = std::stod(need());
+    } else if (opt == "--mass-cal-scale") {
+      mass_cal_scale = std::stod(need());
+    } else if (opt == "--mass-cal-offset") {
+      mass_cal_offset = std::stod(need());
     } else if (opt == "--mass") {
       freeze_mass = std::stod(need());
       have_mass = true;
@@ -188,7 +194,9 @@ int main(int argc, char** argv) {
                    "[--controller pd|computed_torque|adaptive_computed_torque] "
                    "[--payload-g G] [--gripper-closed] [--gripper-q RAD] "
                    "[--gripper-torque 1-1000] "
-                   "[--kt N.m/A] [--mass KG] [--lambda L] [--csv FILE]\n");
+                   "[--kt N.m/A] [--mass KG] [--lambda L] "
+                   "[--mass-cal-scale S] [--mass-cal-offset KG] "
+                   "[--csv FILE]\n");
       return 2;
     }
   }
@@ -205,6 +213,8 @@ int main(int argc, char** argv) {
     } else if (controller_name == "adaptive_computed_torque") {
       arm_control::PayloadMassRlsEstimator::Config est;
       est.forgetting_factor = rls_lambda;
+      est.raw_mass_scale = mass_cal_scale;
+      est.raw_mass_offset = mass_cal_offset;
       auto instance = std::make_unique<AdaptiveComputedTorqueController>(
           cfg.urdf_path, payload_urdf, reference_payload_mass, kComputedKp,
           kComputedKd, plant.timestep(), est);
@@ -223,9 +233,9 @@ int main(int argc, char** argv) {
     std::printf(
         "hardware  controller=%s  payload=%.0f g (physical)  "
         "K=(%.0f,%.0f,%.0f,%.0f,%.0f,%.0f)\n"
-        "hold 70 g in the jaws — squeeze, home, 1-pose ID, then 4 s min-jerk\n",
+        "hold %.0f g in the jaws — squeeze, home, 1-pose ID, then 4 s min-jerk\n",
         controller_name.c_str(), payload_g, kKservo[0], kKservo[1], kKservo[2],
-        kKservo[3], kKservo[4], kKservo[5]);
+        kKservo[3], kKservo[4], kKservo[5], payload_g);
     if (adaptive) {
       if (have_mass) {
         std::printf("static-gravity  kt=%.3f N.m/A  freeze m=%.4f kg from gravity_id\n",
@@ -233,6 +243,9 @@ int main(int argc, char** argv) {
       } else {
         std::printf("static-gravity  kt=%.3f N.m/A  1-pose two-way ID this run, then freeze\n",
                     cfg.kt_nm_per_a[1]);
+        std::printf(
+            "mass calibration  physical=(raw%+.5f)/%.5f, then clamp [0,0.5]\n",
+            -mass_cal_offset, mass_cal_scale);
       }
     }
     plant.reset();
@@ -253,8 +266,8 @@ int main(int argc, char** argv) {
     } else if (adaptive) {
       std::printf("1-pose static ID (two-way current at kTarget) — ~8 s\n");
       const double m = identify_mass_this_run(plant, *adaptive);
-      adaptive->set_payload_mass(m);
-      std::printf("this-run LS mass=%.4f kg  compensated=%.4f kg  (frozen)\n",
+      adaptive->set_identified_payload_mass(m);
+      std::printf("this-run LS raw_mass=%.4f kg  calibrated=%.4f kg  (frozen)\n",
                   adaptive->estimated_payload_mass(),
                   adaptive->compensated_payload_mass());
     }

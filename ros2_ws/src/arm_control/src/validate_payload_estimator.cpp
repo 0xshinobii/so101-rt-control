@@ -54,6 +54,23 @@ int main() {
   ok &= expect(bounded.mass() == 0.3 && bounded.raw_mass() > 0.3,
                "mass projection preserves raw diagnostic estimate");
 
+  PayloadMassRlsEstimator::Config calibrated_config;
+  calibrated_config.raw_mass_scale = 2.0;
+  calibrated_config.raw_mass_offset = -0.01;
+  PayloadMassRlsEstimator calibrated(calibrated_config);
+  calibrated.set_raw_mass(0.19);
+  ok &= expect(std::abs(calibrated.raw_mass() - 0.19) < 1e-12 &&
+                   std::abs(calibrated.mass() - 0.10) < 1e-12,
+               "affine calibration is applied before projection");
+  calibrated.set_raw_mass(1.19);
+  ok &= expect(calibrated.raw_mass() == 1.19 &&
+                   calibrated.mass() == calibrated_config.max_mass,
+               "calibrated physical mass is projected after correction");
+  calibrated.set_mass(0.20);
+  ok &= expect(calibrated.raw_mass() == 0.20 &&
+                   calibrated.mass() == 0.20,
+               "known physical mass bypasses instrument calibration");
+
   // Synthetic causal sequence: tau[k-1] is generated from the state at k-1
   // and the acceleration inferred from qdot[k] - qdot[k-1]. A deliberately
   // shifted regressor must not recover the same mass.

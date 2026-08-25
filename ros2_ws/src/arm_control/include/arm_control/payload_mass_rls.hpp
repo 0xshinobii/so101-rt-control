@@ -18,6 +18,10 @@ public:
     double min_mass = 0.0;
     double max_mass = 0.5;
     double excitation_threshold = 1e-8;
+    // Instrument calibration: raw = scale * physical + offset.
+    // Identity defaults preserve the simulation estimator.
+    double raw_mass_scale = 1.0;
+    double raw_mass_offset = 0.0;
   };
 
   PayloadMassRlsEstimator();
@@ -26,7 +30,10 @@ public:
   bool update(const Eigen::VectorXd& payload_regressor,
               const Eigen::VectorXd& observed_extra_torque);
   void reset();
+  // Known physical override: bypass instrument calibration.
   void set_mass(double mass);
+  // Identified instrument value: affine-correct, then apply physical bounds.
+  void set_raw_mass(double raw_mass);
 
   // mass() is the physically projected value used by control. raw_mass()
   // retains the signed identification result so empty-arm model bias remains
@@ -38,6 +45,8 @@ public:
   std::size_t rejected_updates() const { return rejected_updates_; }
 
 private:
+  double calibrate_and_clamp(double raw_mass) const;
+
   Config config_;
   double mass_ = 0.0;
   double raw_mass_ = 0.0;

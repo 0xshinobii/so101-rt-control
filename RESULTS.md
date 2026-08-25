@@ -2,11 +2,18 @@
 
 **Sim-to-real:** MuJoCo payload RLS recovers 102% of the computed-torque RMS
 gap; on the STS3215 bus the same `q̈` identity is false (`raw_mass = −0.175 kg`).
-Hardware path is rest-current ID, freeze, track. The latest four-mass campaign
-has a **2.31× raw scale**; affine correction gives **+8.0 g (4.4%)** on an
-independent 181 g repeat, with **14.6 g (8.1%)** two-run spread. Tracking-null
-on 70 g straddles truth: elbow **0.058 kg**, lift **~0.155 kg** (0.070
-physical); elbow is the one joint with identified `K_servo`.
+Hardware path is rest-current ID, calibrate, freeze, track. The four-mass
+campaign gives a **2.31× raw instrument scale**; the affine correction now runs
+inside the controller, ahead of the `[0, 0.5] kg` projection. Closed loop, that
+moves final elbow offset **+0.0283 → +0.0084 rad** at 90 g and
+**+0.0443 → +0.0145 rad** at 180 g, and settled arm RMS excluding wrist-roll
+**0.0149 → 0.0057** and **0.0232 → 0.0110** — with lift regressing in both, on
+placeholder `K_servo`. Corrected mass lands **−4.1 g** at 90 g and **−3.0 g** at
+180 g, but run-to-run spread (**4.9 g** at 90 g, **14.6 g** across three readings
+near 181 g) exceeds those errors and is the bound; every mass run so far is a
+fitted mass, so interpolation is untested. Tracking-null on 70 g straddles truth:
+elbow **0.058 kg**, lift **~0.155 kg** (0.070 physical); elbow is the one joint
+with identified `K_servo`.
 
 ## Baseline reference metrics
 
@@ -535,6 +542,19 @@ spread**, not the 3.97 g in-sample RMSE. This is a single-digit-percent result;
 labeling it “research-grade” would require a cited, protocol-matched external
 benchmark.
 
+A second repeat at 90 g exercised the affine map **inside the controller,
+before `[0, 0.5]` projection**. Raw **0.18624 kg** became **0.08595 kg**:
+**−4.05 g (−4.5%)**. The two corrected 90 g readings differ by **4.90 g**.
+Using corrected 0.08595 kg instead of raw 0.19758 kg reduced final elbow
+offset from **+0.0283 rad to +0.0084 rad** (70%); lift moved from −0.0010 to
+−0.0041 rad, but its `K_servo = 90` remains a placeholder.
+
+A calibrated 180 g run returned raw **0.39672 kg** and compensated
+**0.17697 kg**: **−3.03 g (−1.7%)**. Relative to the first uncalibrated
+181 g run, final elbow offset fell from **+0.0443 rad to +0.0145 rad**
+(67%); lift changed from −0.0061 to −0.0148 rad, again on placeholder
+`K_servo`.
+
 The four fit residuals are in-sample and each calibration mass was run once.
 Gripper position changed systematically
 (−0.232, −0.172, −0.081, +0.020 rad) as weights were stacked; its correlation
@@ -545,11 +565,11 @@ calibration should hold jaw opening and object footprint fixed while changing
 internal weight.
 
 The 273 g raw estimate exceeded the controller’s 0.5 kg compensation clamp;
-the unclamped **0.62816 kg diagnostic** is what enters the fit. On the current
-uncorrected runtime path, raw 0.5 kg corresponds through the affine map to
-**0.222 kg true mass**. Above ~222 g the controller under-compensates even if
-the raw ID follows this fit. Applying the affine correction before the
-physical-mass clamp would remove that artificial limit.
+the unclamped **0.62816 kg diagnostic** is what enters the fit. On the old
+uncalibrated path, raw 0.5 kg corresponded through the affine map to
+**0.222 kg true mass**. The calibrated runtime now applies the affine
+correction before the physical `[0, 0.5] kg` clamp, removing that artificial
+~222 g limit for this calibrated stacking geometry.
 
 The prior 70 g campaign’s ~1.4× incremental scale and this campaign’s 2.31×
 scale used the same `kTarget` protocol but different sessions and stacking
@@ -559,15 +579,17 @@ the geometry collinearity prevents attributing the change to `k_t` alone.
 
 Logs: `docs/data/hw_id_000.csv`, `docs/data/hw_id_090.csv`,
 `docs/data/hw_id_0181.csv`, `docs/data/hw_id_0181_repeat.csv`,
-`docs/data/hw_id_0273.csv`.
+`docs/data/hw_id_0273.csv`, `docs/data/hw_affine_090.csv`,
+`docs/data/hw_affine_0180.csv`.
 
 **Status.** Sim Phases 4–5 and the hardware plant (bridge, `K_servo`,
 Present_Current `k_t`, rest-ID then freeze) are done. Hardware does **not**
 recover Phase 5 online `q̈` RLS; mass during motion stays frozen. Current-ID
 raw scale is ~2.31× in this four-mass stacking geometry; affine correction
-gives **+8.0 g (4.4%)** repeat-run error at 181 g and **14.6 g (8.1%)**
-two-run spread; unseen-mass interpolation is not yet tested. Elbow
-tracking-null on 70 g is 0.058 kg; lift says ~0.155 kg. Highest-value
+gives repeat-run errors **−4.1 g at 90 g**, **−3.0 g at 180 g**, and
+**+8.0 g at 181 g**. Applying it before the clamp reduced elbow offset by
+70% at 90 g and 67% at 180 g; unseen-mass interpolation is not yet tested.
+Elbow tracking-null on 70 g is 0.058 kg; lift says ~0.155 kg. Highest-value
 remaining hardware is the **locked-rotor** check (reg 69 vs ammeter + stall
 current), followed by fixed-geometry repeatability. Variable load in one
 tracking run is out of scope.

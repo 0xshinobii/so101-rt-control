@@ -28,7 +28,20 @@ PayloadMassRlsEstimator::PayloadMassRlsEstimator(Config config)
   if (config_.excitation_threshold < 0.0) {
     throw std::invalid_argument("RLS excitation threshold must be non-negative");
   }
+  if (!std::isfinite(config_.raw_mass_scale) ||
+      !(config_.raw_mass_scale > 0.0)) {
+    throw std::invalid_argument("RLS raw mass scale must be finite and positive");
+  }
+  if (!std::isfinite(config_.raw_mass_offset)) {
+    throw std::invalid_argument("RLS raw mass offset must be finite");
+  }
   reset();
+}
+
+double PayloadMassRlsEstimator::calibrate_and_clamp(double raw_mass) const {
+  const double calibrated =
+      (raw_mass - config_.raw_mass_offset) / config_.raw_mass_scale;
+  return std::clamp(calibrated, config_.min_mass, config_.max_mass);
 }
 
 bool PayloadMassRlsEstimator::update(
@@ -59,7 +72,7 @@ bool PayloadMassRlsEstimator::update(
   const double denominator =
       config_.forgetting_factor + covariance_ * regressor_norm_squared;
   raw_mass_ += (covariance_ / denominator) * projected_innovation;
-  mass_ = std::clamp(raw_mass_, config_.min_mass, config_.max_mass);
+  mass_ = calibrate_and_clamp(raw_mass_);
   // Information (inverse covariance) adds as
   //   1 / P_new = lambda / P + phi^T phi.
   // Inverting gives P_new = P / (lambda + P * phi^T phi), whose
@@ -80,6 +93,11 @@ void PayloadMassRlsEstimator::reset() {
 void PayloadMassRlsEstimator::set_mass(double mass) {
   raw_mass_ = mass;
   mass_ = std::clamp(raw_mass_, config_.min_mass, config_.max_mass);
+}
+
+void PayloadMassRlsEstimator::set_raw_mass(double raw_mass) {
+  raw_mass_ = raw_mass;
+  mass_ = calibrate_and_clamp(raw_mass_);
 }
 
 }  // namespace arm_control

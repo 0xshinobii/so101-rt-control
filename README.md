@@ -1,8 +1,7 @@
 # so101-rt-control
 
 **Payload-adaptive trajectory tracking on a 5-DOF arm, as a real-time C++ / ROS 2
-stack — taken from MuJoCo to real hardware, with the sim-to-real gap measured
-rather than hand-waved.**
+stack — taken from MuJoCo to real hardware, with the sim-to-real gap measured.**
 
 One control loop, written once, runs against two backends behind a single
 `PlantInterface`: MuJoCo in simulation, and a ThinkRobotics SO-ARM101 over a
@@ -11,10 +10,14 @@ kernel at 200 Hz. Controllers (PD, computed torque, adaptive computed torque wit
 online payload estimation) never learn which side of the plant boundary they are
 on.
 
-The interesting result is not the tracking-error table. It is that the payload
-estimator which recovered **102% of the computed-torque error gap in simulation**
-returned **−0.175 kg on hardware** — and that there are four nameable structural
-reasons why, none of which are "needs more tuning".
+The sim-to-real gap is the substance of the project. The online payload estimator
+that recovers **102% of the computed-torque error gap in simulation** returns
+**−0.175 kg on hardware**, for four structural reasons that no amount of tuning
+removes. The hardware path is therefore a different estimator: identify the mass
+statically from motor current at rest, calibrate the instrument, freeze it, then
+track. Applying that correction inside
+the controller cuts the elbow's steady-state offset by **67–70%** and the arm RMS
+by **53–62%** on real hardware.
 
 ---
 
@@ -23,7 +26,7 @@ reasons why, none of which are "needs more tuning".
 - [Headline results](#headline-results)
 - [Architecture and the real-time boundary](#architecture-and-the-real-time-boundary)
 - [Full metrics table](#full-metrics-table)
-- [The sim-to-real finding](#the-sim-to-real-finding)
+- [The sim-to-real finding, and what closed it](#the-sim-to-real-finding-and-what-closed-it)
 - [What this does not claim](#what-this-does-not-claim)
 - [Build and run](#build-and-run)
 - [Repository layout](#repository-layout)
@@ -38,7 +41,8 @@ reasons why, none of which are "needs more tuning".
 | **Computed torque vs naive PD** (sim, 0.20 kg known payload) | settled arm RMS **0.0216 → 0.0028 rad (−86.9%)**; end-effector miss **0.0300 → 0.00018 m (−99.4%)** |
 | **Online payload RLS** (sim, 0.20 kg unknown) | recovers **102.4%** of the steady-state RMS gap and **97.8%** of the Cartesian gap toward the perfect-model bound; mass error **2.3 g** |
 | **Computed torque vs PD** (hardware, 151 g payload) | arm RMS excluding wrist-roll **0.024 → 0.012 rad (−50%)**; elbow miss **0.042 → 0.018 rad** |
-| **Payload identification** (hardware, static current ID + affine correction) | **+8.0 g (4.4%)** repeat-run error at 181 g, with a **14.6 g (8.1%)** two-run spread |
+| **Payload compensation** (hardware, calibrated static ID, closed loop) | elbow offset **0.0283 → 0.0084 rad (−70%)** at 90 g and **0.044 → 0.015 rad (−67%)** at 180 g; arm RMS excluding wrist-roll **−62%** / **−53%** |
+| **Payload identification** (hardware, static current ID + affine correction) | corrected mass within **3–8 g** of truth near the fitted masses — bounded by a **4.9 g** (90 g) and **14.6 g** (181 g) run-to-run spread, which bounds it |
 | **RT wakeup jitter** (PREEMPT_RT, i7-7700, under `stress-ng`) | p99 **6.18 µs**, p99.9 **11.34 µs** on a 5000 µs period — **0.2%** |
 | **Serial bus round-trip** (200 Hz, 2000 loops, zero loss) | `sync_read` p99.9 **1.71 ms** + `sync_write` **0.19 ms** = **38%** of the period |
 
@@ -52,8 +56,7 @@ truth — this README summarises it.
 
 ![Architecture: where the real-time boundary lives](docs/figures/architecture.svg)
 
-The diagram answers the question worth asking of any motion-control repo: **which
-code is allowed to block, and which is not.**
+The diagram shows **which code is allowed to block, and which is not.**
 
 **Above the line** — the `rclcpp` executor thread. It may allocate, log, take
 locks and publish. It runs a 20 ms wall timer that drains telemetry and publishes
@@ -81,14 +84,14 @@ q_cmd = q_des + clamp(τ / K_servo, ±0.12 rad)
 
 That is the same realization strategy Universal Robots and most position-controlled
 industrial arms use, as opposed to the impedance-style direct torque command of a
-Franka or KUKA iiwa. It is a named design point, not a workaround.
+Franka or KUKA iiwa.
 
-### The point of the RT measurement
+### What the RT measurement shows
 
 `PREEMPT_RT` buys a 5–11 µs wakeup on a 5000 µs period. The serial bus spends
-**170× more of that budget than the scheduler does.** Measuring both is what
-tells you the CPU was never the bottleneck — and that a 1 kHz loop on this arm is
-a bus-protocol problem (per-servo Return Delay Time), not a kernel problem.
+**170× more of that budget than the scheduler does.** Measuring both locates the
+bottleneck: not the CPU, and so a 1 kHz loop on this arm is a bus-protocol
+problem (per-servo Return Delay Time) rather than a kernel one.
 
 Regenerate the figure with `python3 tools/plot_architecture.py`.
 
@@ -100,7 +103,7 @@ Regenerate the figure with `python3 tools/plot_architecture.py`.
 
 Settled window `t ≥ 1.5 s`; arm RMS is the mean over the five arm joints
 (gripper excluded). Actuator limits are the real STS3215 envelope (±2.94 N·m),
-never widened to make a controller work.
+not widened to make a controller work.
 
 | # | Payload | Controller | Model knows payload? | Settled arm RMS [rad] | EE miss [m] | Peak τ [N·m] |
 |---|---|---|---|---|---|---|
@@ -113,7 +116,7 @@ never widened to make a controller work.
 | 7 | 0.20 kg | CT + payload RLS | estimated | `0.002545` | `0.000646` | 1.919 |
 | 8 | 0.20 kg | computed torque | **yes** (upper bound) | `0.002840` | `0.000184` | 1.923 |
 
-Deltas, each stated against a named reference rather than a floating "baseline":
+Deltas, each against a named reference row:
 
 | Comparison | Reference | Arm RMS | EE miss |
 |---|---|---|---|
@@ -125,8 +128,8 @@ Deltas, each stated against a named reference rather than a floating "baseline":
 | **RLS gap recovery toward the perfect-model bound, 0.20 kg** | (6−7)/(6−8) | **102.4%** | **97.8%** |
 
 The 102.4% slightly exceeds 100% because the residual Coulomb-friction deadband
-differs between trajectories. It is **not** evidence that an estimated model beats
-perfect knowledge, and is not presented as such.
+differs between trajectories. It is not evidence that an estimated model beats
+perfect knowledge.
 
 Mass identification in simulation:
 
@@ -137,8 +140,8 @@ Mass identification in simulation:
 | 0.20 | `0.192716` | `0.202344` | **+2.3 g** | 1.995 |
 
 The negative empty-arm estimate is the measured friction/damping model-bias floor.
-The automated gate is frozen at 3.5 g — *after* measurement, at ~30% margin, not
-guessed beforehand.
+The automated gate is frozen at 3.5 g, chosen after measurement at ~30% margin
+rather than before it.
 
 **Blocking gate before any of the above runs:** rigid-body equivalence between the
 MuJoCo plant and the Pinocchio controller model, over five poses and two nonzero
@@ -195,34 +198,69 @@ Signed final offset `target − q` in rad. Computed torque beats PD by **32%** o
 the 5-joint RMS and **50%** with wrist-roll excluded — same data, and the
 5-joint figure *understates* the result, because wrist-roll holds a constant
 ~0.027 rad (≈18 encoder LSB) that no controller moves: `g_roll ≈ 0`, so no gravity
-overlay reaches it. That constant is reported, not quietly dropped. A calibration
-offset there is not ruled out.
+overlay reaches it. A calibration offset there is not ruled out.
 
 ![151 g PD vs CT, elbow](docs/figures/hw_151_elbow.png)
 
 The figure also shows slow PD drift *inside* the nominal settled window (elbow
 −0.053 rad at 1.5 s → −0.042 rad at 4.0 s), so PD's RMS is somewhat
-window-dependent. The PD–CT gap is larger than the drift, but the drift is stated.
+window-dependent. The PD–CT gap is larger than the drift.
 
 **The hardware problem statement, in one line:** adding 70 g shifts the elbow
 error by **0.020 rad** (+0.007 empty → −0.013 loaded) with no payload
 compensation. That is what payload adaptation has to close.
 
-Payload mass identification on hardware, by three independent methods:
+#### Identifying the payload — three independent methods
 
 | Method | Result | vs truth |
 |---|---|---|
-| Phase 5 `q̈` RLS, ported unchanged from sim | `raw = −0.175 kg`, clamped to 0 | **fails structurally** |
-| Static `Present_Current` ID + affine calibration | 181 g repeat → +8.0 g | **+4.4%**, two-run spread 8.1% |
+| Online `q̈` RLS, ported unchanged from sim | `raw = −0.175 kg`, clamped to 0 | **fails structurally** |
+| Static `Present_Current` ID, **raw** | 0.198 kg at 90 g; 0.391 kg at 181 g | **+120%**, i.e. a 2.31× instrument scale |
+| Static `Present_Current` ID, **affine-corrected** | 0.086 kg at 90 g; 0.177 kg at 180 g | **−4.1 g / −3.0 g** |
 | Tracking-null (independent of current), 70 g | elbow 0.058 kg / lift ~0.155 kg | −17% / +121% |
 
 Affine fit over four masses (0 / 90 / 181 / 273 g):
-`m_raw = 2.31217·m_true − 0.01248 kg`, residual standard error **5.62 g**
-(`sqrt(SSE/(n−p))`, n=4 p=2), max residual 6.57 g.
+`m_raw = 2.31217·m_true − 0.01248 kg`, so `m_cal = (m_raw + 0.01248)/2.31217`.
+Residual standard error **5.62 g** (`sqrt(SSE/(n−p))`, n=4 p=2), max residual
+6.57 g. The correction lives in `PayloadMassRlsEstimator::calibrate_and_clamp()`
+and is applied *before* the physical `[0, 0.5] kg` projection, which also removes
+the artificial ~222 g compensation ceiling the raw path had.
+
+**The spread bounds this, not the residual.** Near each fitted mass the run-to-run
+variation is larger than any single error: two 90 g readings differ by **4.9 g**,
+and three readings near 181 g span **14.6 g**. The −4.1 g and −3.0 g above are
+single draws from that distribution, not evidence of 2% accuracy.
+
+#### What the correction buys in closed loop
+
+The calibrated mass is used by the controller, not just reported. Same `kTarget`,
+1.0 s minimum-jerk, 4.0 s log; the only change between columns is whether the
+affine correction is applied before the clamp. Offsets are signed `target − q` at
+`t = 4.0 s`; RMS is over the settled window `t ≥ 1.5 s`.
+
+| | 90 g raw | 90 g **calibrated** | Δ | 181 g raw | 180 g **calibrated** | Δ |
+|---|---|---|---|---|---|---|
+| mass used by the controller | 0.1976 kg | **0.0860 kg** | — | 0.3908 kg | **0.1770 kg** | — |
+| mass error | +108 g | **−4.1 g** | — | +210 g | **−3.0 g** | — |
+| elbow offset [rad] | +0.0283 | **+0.0084** | −70% | +0.0443 | **+0.0145** | −67% |
+| lift offset [rad] | −0.0010 | −0.0041 | *worse* | −0.0061 | −0.0148 | *worse* |
+| arm RMS excl. wrist-roll [rad] | 0.0149 | **0.0057** | **−62%** | 0.0232 | **0.0110** | **−53%** |
+| arm RMS, 5 joints [rad] | 0.0190 | 0.0139 | −27% | 0.0242 | 0.0162 | −33% |
+
+Logs: `docs/data/hw_id_090.csv`, `docs/data/hw_affine_090.csv`,
+`docs/data/hw_id_0181.csv`, `docs/data/hw_affine_0180.csv`.
+
+**Lift gets worse in both runs, and that is the expected sign.** The corrected
+mass is *smaller* than the raw one, so the gravity overlay shrinks — elbow stops
+overshooting, and lift sags further. Lift's `K_servo = 90` is a placeholder, so
+its error-versus-mass slope is arbitrary and the raw over-estimate had been
+masking that. The improvement concentrates on the elbow, which is the one joint
+with an identified stiffness — the sign and the location both follow from the
+model.
 
 ---
 
-## The sim-to-real finding
+## The sim-to-real finding, and what closed it
 
 `τ_applied − ID_empty(q, q̇, q̈) = Φ(q, q̇, q̈)·m` is a valid identity on a torque
 plant. On this servo bus it is false, for four independent reasons:
@@ -242,23 +280,23 @@ plant. On this servo bus it is false, for four independent reasons:
 Causes 2–3 vanish at rest. Cause 1 does not. Hence the pivot: identify the mass
 **statically** from `Present_Current` (register 69) with a ±0.07 rad two-way
 approach to cancel Coulomb friction, freeze it, then track. The projection clamp
-`m ∈ [0, 0.5]` catching `−0.175 kg` and degrading gracefully to computed-torque-empty
-is the safety layer doing exactly its job.
+`m ∈ [0, 0.5]` catches `−0.175 kg` and degrades to computed-torque-empty rather
+than injecting negative mass.
 
-A tracking-error delta tells a reviewer that one controller beat another. A gap
-*with a named mechanism*, plus a second independent estimator that brackets truth
-within 17%, tells them how the engineer thinks. That is why this section exists.
+That pivot is now closed end to end. The static estimate is a raw instrument
+reading with a 2.31× scale, so it is affine-corrected inside
+`PayloadMassRlsEstimator` before the physical projection, and the corrected mass
+is what the controller compensates with. On hardware that cuts the elbow's
+steady-state offset by 67–70% and the arm RMS (excluding wrist-roll) by 53–62%
+against the identical run using the raw estimate.
 
 ---
 
 ## What this does not claim
 
-Stated here rather than buried, because a portfolio repo that only shows wins is
-not evidence of engineering judgement.
-
 - **Only the elbow's `K_servo` is identified** (≈ 11 N·m/rad, from `g(q)`/droop on
   a settled stream). The other five entries `(50, 90, 11, 50, 50, 50)` are frozen
-  placeholders. Gravity-compensation headlines therefore rest on the elbow — the
+  placeholders. The gravity-compensation results therefore rest on the elbow — the
   one joint with a measured stiffness. Wrist-flex carries real gravity torque and
   its overlay is scaled by an arbitrary `K = 50`.
 - **Elbow `K ≈ 11` vs lift `K = 90` is physically odd** for nominally identical
@@ -268,27 +306,35 @@ not evidence of engineering judgement.
   moved monotonically (−0.232 → +0.020 rad) as weights were stacked; its
   correlation with mass is **r = 0.994**. Mass and attachment geometry are nearly
   collinear, so the 2.31× slope conflates instrument scale with grasp geometry.
-- **+8.0 g at 181 g is repeatability, not generalization.** It is a repeat run at a
-  *fitted* mass. A true held-out test needs a fifth, unseen mass (~130 g).
-- **Do not read the 3.97 g in-sample RMSE as an accuracy figure.** When repeat
-  spread (14.6 g) exceeds fit residual (5.6 g), the spread is the honest number.
+- **Every mass tested so far is a fitted mass.** 90 g and 181 g are fit points, and
+  the "180 g" calibrated run sits 1 g from one — so all of it is repeatability, not
+  generalization. A true held-out test needs an unseen mass (~130 g, between fit
+  points). Until then the affine map is not known to interpolate.
+- **Do not read the 3.97 g in-sample RMSE, or any single run's error, as an
+  accuracy figure.** Run-to-run spread (4.9 g at 90 g, 14.6 g near 181 g) exceeds
+  both the fit residual (5.6 g) and the individual errors quoted above.
+- **The closed-loop improvement is an elbow result.** Lift regresses in both
+  calibrated runs; the aggregate improves because elbow and wrist-flex dominate.
+  Only the elbow has an identified `K_servo`, so only the elbow's error-versus-mass
+  slope is physically meaningful.
+- **`n = 2` on the closed-loop claim.** One calibrated run at each of two masses,
+  each against one uncalibrated run. The effect is large and the sign is predicted
+  by the model, but this is not a repeated experiment.
 - **The 6.5 mA current LSB and the ~2.5–3 A stall current are datasheet values, not
   measured here.** The claim that the fitted `k_t = −12.5223 N·m/A` is ~10× inflated
   by gearbox friction is therefore a *hypothesis*. One locked-rotor test settles it.
-- **Operating envelope:** raw 0.5 kg (the compensation clamp) maps to 0.222 kg true.
-  Above ~222 g the controller under-compensates even with a correct raw ID. The fix
-  — apply the affine correction *before* the physical-mass clamp — is known and not
-  yet applied.
+- **The ~222 g compensation ceiling is gone, for this geometry only.** The affine
+  correction now runs before the `[0, 0.5] kg` projection, so raw estimates above
+  0.5 kg no longer clip. That relies on the same 2.31× map, and therefore on the
+  same stacking geometry.
 - **No external benchmark is cited.** The measured single-digit-percent result is
   stated as measured. A comparison to commercial or published payload ID would
-  require a cited, protocol-matched source, and inventing one would be worse than
-  omitting it.
+  require a cited, protocol-matched source.
 - Sim friction is the MuJoCo Menagerie vendor default (`damping=0.60`,
   `frictionloss=0.052`, `armature=0.028`) — estimates for this class of servo, not
   measurements of this arm.
 
-Open bench work, ranked by value per minute, is listed at the end of
-[RESULTS.md](RESULTS.md).
+Remaining bench work is listed at the end of [RESULTS.md](RESULTS.md).
 
 ---
 
@@ -300,7 +346,7 @@ C library). On bare-metal Linux, Docker is namespacing over the host kernel, so
 
 ```bash
 # Simulation: build the image, then build + gate + benchmark end to end.
-# Requires the Phase 1.5 oracle CSV first (host, needs the Python deps):
+# Requires the reference baseline CSV first (host, needs the Python deps):
 python3 run_baseline_so101.py --csv oracle_baseline_so101.csv
 ./docker/build_and_validate.sh
 ```
@@ -345,7 +391,7 @@ arm crawls (~0.06 rad/s at `speed = 40`).
 ros2_ws/src/
   arm_control/          the stack
     include/arm_control/
-      plant_interface.hpp     torque in, state out -- the orthogonality spine
+      plant_interface.hpp     torque in, state out -- sim and hardware both implement it
       controller.hpp          one signature for PD / CT / adaptive CT
       control_loop.hpp        RT-clean iteration: no alloc, no I/O
       rt_thread.hpp           SCHED_FIFO, mlockall, cpu_dma_latency

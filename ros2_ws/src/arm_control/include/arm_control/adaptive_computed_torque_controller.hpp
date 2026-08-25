@@ -47,7 +47,12 @@ public:
   void add_static_observation(const Eigen::VectorXd& q,
                               const Eigen::VectorXd& tau_meas, double& num,
                               double& den);
+  // Explicit known physical mass bypasses instrument calibration.
   void set_payload_mass(double mass) { estimator_.set_mass(mass); }
+  // Static-ID output is an instrument reading: calibrate before clamping.
+  void set_identified_payload_mass(double raw_mass) {
+    estimator_.set_raw_mass(raw_mass);
+  }
 
   const Eigen::VectorXd& raw_peak_torque() const { return raw_peak_torque_; }
   const Eigen::VectorXd& applied_peak_torque() const {
