@@ -234,9 +234,11 @@ Tools: [`ros2_ws/src/arm_control/src/rt_jitter_bench.cpp`](ros2_ws/src/arm_contr
 
 Follower: ThinkRobotics SO-ARM101, 6× STS3215 on `/dev/ttyACM0` (WCH 1a86).
 `f_hw = 200 Hz` (`dt = 0.005`), same as `so101_torque.xml`. Bus RTT (2000
-loops, zero loss): sync_read p99.9 1.71 ms, sync_write p99.9 0.19 ms, I/O
-together ~1.90 ms (~38% of the 5 ms period). `bus_timeout_ns = 5_130_000`.
-Read is ~9× write, more than packet size alone explains. Per-servo Return
+loops, zero loss): sync_read p99.9 1.95 ms, sync_write p99.9 0.19 ms
+(kernel queue drained, max 0.29 ms — not wire-time), I/O together ~2.14 ms
+(~43% of the 5 ms period). Runner deadlines are 2.5 ms read / 0.75 ms write,
+capped to the remaining period.
+Read is ~10× write, more than packet size alone explains. Per-servo Return
 Delay Time (register 7) is the likely dominant term, but was not verified.
 
 Tick→rad gate at calibrated `q = 0`: model EE (MuJoCo) x=39.1 cm, y≈0,

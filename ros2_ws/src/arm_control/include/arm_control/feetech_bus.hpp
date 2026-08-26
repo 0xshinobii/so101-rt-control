@@ -69,8 +69,8 @@ private:
   // not allocate, so the steady-state hot path is allocation-free.
   std::vector<uint8_t> pkt_;
   int fd_ = -1;
-  int64_t rx_timeout_ns_ = 2500000;  // measured max 1.72 ms
-  int64_t tx_timeout_ns_ = 750000;   // measured max 0.27 ms
+  int64_t rx_timeout_ns_ = 2500000;  // measured max 1.96 ms
+  int64_t tx_timeout_ns_ = 750000;   // measured max 0.29 ms
   FeetechStats stats_;
 };
 

@@ -46,7 +46,7 @@ excluding wrist-roll by **49–55%** versus the same static ID without calibrati
 | **Payload compensation** (hardware, calibrated static ID vs raw static ID) | elbow offset **0.0237 → 0.0053 rad (−78%)** at 90 g and **0.0406 → 0.0069 rad (−83%)** at 180 g; arm RMS excluding wrist-roll **−49% / −55%** |
 | **Payload identification** (hardware, static current ID + affine correction) | final campaign mass error **−7.2 g** at 90 g and **−4.0 g** at 180 g; observed repeat spread **7.8 g / 14.6 g** |
 | **RT wakeup jitter** (PREEMPT_RT, i7-7700, under `stress-ng`) | p99 **6.18 µs** (**0.12%**), p99.9 **11.34 µs** (**0.23%**) of a 5000 µs period |
-| **Serial bus round-trip** (200 Hz, 2000 loops, zero loss) | `sync_read` p99.9 **1.71 ms** + `sync_write` **0.19 ms** = **38%** of the period |
+| **Serial bus round-trip** (200 Hz, 2000 loops, zero loss) | `sync_read` p99.9 **1.95 ms** + `sync_write` **0.19 ms** = **43%** of the period |
 
 Every number above is measured on this repo's code. Full derivation, discarded
 runs, and caveats are in **[RESULTS.md](RESULTS.md)**, which is the source of
@@ -83,7 +83,7 @@ CPU pin. Its period comes from `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`
 **What the backend does inside that iteration differs, and the difference is
 real.** MuJoCo writes torque to `d->ctrl` and returns — no I/O at all. The
 hardware backend must talk to a serial bus, so every iteration performs one
-blocking `sync_write` and one blocking `sync_read`, together ~1.9 ms of the 5 ms
+blocking `sync_write` and one blocking `sync_read`, together ~2.1 ms of the 5 ms
 period. That I/O is inherent to the plant, not an artefact. Request and command
 buffers are reused, and the receive decoder processes payload bytes without heap
 scratch. `sync_read` and `sync_write` each have their own transaction deadline
@@ -197,18 +197,16 @@ Bus round-trip over 2000 loops, zero packet loss:
 
 | | p99.9 | share of the 5 ms period |
 |---|---|---|
-| `sync_read` | 1.71 ms | 34% |
+| `sync_read` | 1.95 ms | 39% |
 | `sync_write` | 0.19 ms | 4% |
-| **together** | **1.90 ms** | **38%** |
+| **together** | **2.14 ms** | **43%** |
 
-The 0.19 ms write is from the archived enqueue-only bench. The runner now waits
-until the kernel TTY queue is empty (`TIOCOUTQ == 0`): more honest than
-enqueue-only, still not wire-time on USB-serial. Re-run `bus_timing` before
-quoting a new write number.
+Write p99.9 is still 0.19 ms after waiting for `TIOCOUTQ == 0` (max 0.29 ms).
+That is kernel queue drained into the USB stack, not UART wire-time.
 
-Read is ~9× write — more than packet size alone explains. Per-servo Return Delay
+Read is ~10× write — more than packet size alone explains. Per-servo Return Delay
 Time (register 7) is the likely dominant term; six servos at the ~250 µs default is
-close to the observed 1.71 ms. **Not yet verified**, and it is the single change
+close to the observed 1.95 ms. **Not yet verified**, and it is the single change
 most likely to put 1 kHz in reach.
 
 All hardware tracking numbers below come from a single campaign at **two

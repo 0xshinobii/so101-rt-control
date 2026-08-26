@@ -30,8 +30,8 @@ public:
     std::array<double, kDof> k_servo = {50.0, 90.0, 11.0, 50.0, 50.0, 50.0};
     double max_lead_q = 0.12;    // rad; Goal_Position stays near present q
     int goal_speed = 40;         // Feetech units; 0 = unlimited (unsafe)
-    int64_t rx_timeout_ns = 2500000;  // full six-servo read; max measured 1.72 ms
-    int64_t tx_timeout_ns = 750000;   // kernel-queue drain; max measured 0.27 ms
+    int64_t rx_timeout_ns = 2500000;  // full six-servo read; max measured 1.96 ms
+    int64_t tx_timeout_ns = 750000;   // kernel-queue drain; max measured 0.29 ms
     int max_bus_fails = 3;
     double home_duration = 4.0;
     double gripper_q = 0.0;      // held during home + tracking

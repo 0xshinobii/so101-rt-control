@@ -99,6 +99,7 @@ install(TARGETS gravity_id DESTINATION lib/${PROJECT_NAME})
 # Phase 7 hardware plant (Pinocchio FK/g(q); no MuJoCo).
 add_executable(hardware_run
   src/hardware_run.cpp
+  src/control_loop.cpp
   src/hardware_backend.cpp
   src/feetech_bus.cpp
   src/pinocchio_dynamics.cpp
