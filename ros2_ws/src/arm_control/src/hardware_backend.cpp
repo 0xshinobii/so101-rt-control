@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <thread>
+#include <time.h>
 
 namespace arm_control {
 namespace {
@@ -35,6 +36,12 @@ double min_jerk(double s) {
   return 10.0 * s3 - 15.0 * s3 * s + 6.0 * s3 * s * s;
 }
 
+int64_t monotonic_ns() {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+}
+
 }  // namespace
 
 HardwareBackend::HardwareBackend(Config cfg)
@@ -43,11 +50,17 @@ HardwareBackend::HardwareBackend(Config cfg)
       calib_(load_so101_calib(cfg_.calib_path)),
       q_(Eigen::VectorXd::Zero(kDof)),
       qdot_(Eigen::VectorXd::Zero(kDof)),
-      q_cmd_(Eigen::VectorXd::Zero(kDof)) {
+      q_cmd_(Eigen::VectorXd::Zero(kDof)),
+      q_ref_(Eigen::VectorXd::Zero(kDof)),
+      q_new_(Eigen::VectorXd::Zero(kDof)) {
+  // Size the packet scratch once so the 200 Hz path never calls the allocator.
+  rx_buf_.reserve(64);
+  tx_buf_.assign(2 * kDof, 0);
   ids_.resize(kDof);
   for (int i = 0; i < kDof; ++i) ids_[i] = static_cast<uint8_t>(calib_[i].id);
   bus_.open(cfg_.port, cfg_.baud);
   bus_.set_rx_timeout_ns(cfg_.rx_timeout_ns);
+  bus_.set_tx_timeout_ns(cfg_.tx_timeout_ns);
   if (cfg_.gripper_closed) {
     const auto& g = calib_[5];
     gripper_hold_tick_ = g.min_ticks;
@@ -74,15 +87,29 @@ HardwareBackend::~HardwareBackend() {
   }
 }
 
-void HardwareBackend::fail_bus(const char* what) {
-  ++bus_fails_;
-  if (bus_fails_ >= cfg_.max_bus_fails) {
+int64_t HardwareBackend::capped_timeout_ns(int64_t budget_ns) const {
+  if (cycle_deadline_ns_ <= 0) return budget_ns;
+  const int64_t remaining = cycle_deadline_ns_ - monotonic_ns();
+  if (remaining <= 0) return 0;
+  return std::min(budget_ns, remaining);
+}
+
+void HardwareBackend::begin_io_cycle() {
+  cycle_deadline_ns_ =
+      monotonic_ns() + static_cast<int64_t>(cfg_.dt * 1e9);
+}
+
+void HardwareBackend::fail_bus(const char* what, int& consecutive_failures) {
+  ++consecutive_failures;
+  if (consecutive_failures >= cfg_.max_bus_fails) {
     disable_torque();
     throw std::runtime_error(std::string("bus failed: ") + what);
   }
 }
 
 void HardwareBackend::disable_torque() {
+  bus_.set_rx_timeout_ns(cfg_.rx_timeout_ns);
+  bus_.set_tx_timeout_ns(cfg_.tx_timeout_ns);
   const uint8_t off = 0;
   for (uint8_t id : ids_) {
     bus_.write(id, FeetechBus::kAddrTorqueEnable, &off, 1);
@@ -142,19 +169,18 @@ void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {
 }
 
 bool HardwareBackend::read_ticks(std::array<int, kDof>& ticks) {
-  std::vector<uint8_t> raw;
-  if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentPosition, 2, raw) ||
-      raw.size() < 12) {
+  if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentPosition, 2, rx_buf_) ||
+      rx_buf_.size() < 12) {
     return false;
   }
   for (int i = 0; i < kDof; ++i) {
-    ticks[i] = static_cast<int>(raw[2 * i] | (raw[2 * i + 1] << 8));
+    ticks[i] = static_cast<int>(rx_buf_[2 * i] | (rx_buf_[2 * i + 1] << 8));
   }
   return true;
 }
 
 bool HardwareBackend::write_ticks(const std::array<int, kDof>& ticks) {
-  std::vector<uint8_t> data(12);
+  std::vector<uint8_t>& data = tx_buf_;
   for (int i = 0; i < kDof; ++i) {
     const int t = std::clamp(
         (i == 5 && gripper_hold_tick_ >= 0) ? gripper_hold_tick_ : ticks[i], 0,
@@ -175,33 +201,55 @@ void HardwareBackend::ticks_to_q(const std::array<int, kDof>& ticks,
 
 int HardwareBackend::q_to_tick(int joint, double q) const {
   const auto& c = calib_[joint];
-  int tick = c.zero_ticks +
-             static_cast<int>(std::lround(c.sign * q / kRadPerTick));
-  return std::clamp(tick, c.min_ticks, c.max_ticks);
+  const int tick = c.zero_ticks +
+                   static_cast<int>(std::lround(c.sign * q / kRadPerTick));
+  const int clamped = std::clamp(tick, c.min_ticks, c.max_ticks);
+  // A truncated goal looks exactly like a tracking failure in the log, so it
+  // has to be counted rather than applied silently.
+  if (clamped != tick) ++tick_clamps_;
+  return clamped;
 }
 
 void HardwareBackend::read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) {
+  begin_io_cycle();
+  bus_.set_rx_timeout_ns(capped_timeout_ns(cfg_.rx_timeout_ns));
   std::array<int, kDof> ticks{};
   if (!read_ticks(ticks)) {
-    fail_bus("sync_read");
+    // Returning the previous state keeps the loop alive, but the caller will
+    // log it as if it were a fresh measurement. Count it so the run can say so.
+    ++stale_reads_;
+    fail_bus("sync_read", read_bus_fails_);
     q = q_;
     qdot = qdot_;
     return;
   }
-  bus_fails_ = 0;
-  Eigen::VectorXd q_new(kDof);
-  ticks_to_q(ticks, q_new);
+  read_bus_fails_ = 0;
+  ticks_to_q(ticks, q_new_);
   if (have_q_) {
-    qdot_ = (q_new - q_) / cfg_.dt;
+    qdot_ = (q_new_ - q_) / cfg_.dt;
   } else {
     qdot_.setZero();
   }
-  q_ = q_new;
+  q_ = q_new_;
   have_q_ = true;
   q = q_;
   qdot = qdot_;
 }
 
+void HardwareBackend::set_reference_position(const Eigen::VectorXd& q_des) {
+  if (q_des.size() != kDof) {
+    throw std::invalid_argument("q_des size");
+  }
+  q_ref_ = q_des;
+}
+
+// The STS3215 has no closed-loop N·m mode, so this project realizes torque as a
+// bounded position lead on the reference:
+//
+//     q_cmd = q_des + clamp(tau / K_servo, +/- max_lead_q)
+//
+// This is the single bridge implementation. Callers reach it through
+// PlantInterface, having supplied q_des via set_reference_position().
 void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
   if (tau.size() != kDof) {
     throw std::invalid_argument("tau size");
@@ -209,38 +257,51 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
   if (!have_q_) {
     throw std::runtime_error("apply_torque before read_state");
   }
-  if (!have_q_cmd_) {
-    q_cmd_ = q_;
-    have_q_cmd_ = true;
-  }
   std::array<int, kDof> ticks{};
   for (int i = 0; i < kDof; ++i) {
-    double dq = tau[i] / cfg_.k_servo;
-    dq = std::clamp(dq, -cfg_.max_delta_q, cfg_.max_delta_q);
-    q_cmd_[i] += dq;
-    const auto& c = calib_[i];
-    double q_lo = c.sign * (c.min_ticks - c.zero_ticks) * kRadPerTick;
-    double q_hi = c.sign * (c.max_ticks - c.zero_ticks) * kRadPerTick;
-    if (q_lo > q_hi) std::swap(q_lo, q_hi);
-    q_cmd_[i] = std::clamp(q_cmd_[i], q_lo, q_hi);
-    q_cmd_[i] = std::clamp(q_cmd_[i], q_[i] - cfg_.max_lead_q,
-                           q_[i] + cfg_.max_lead_q);
+    const double raw_lead = tau[i] / cfg_.k_servo[i];
+    const double lead =
+        std::clamp(raw_lead, -cfg_.max_lead_q, cfg_.max_lead_q);
+    // Saturating here means the controller asked for more authority than the
+    // bridge can express -- the clip that actually shapes the tracking result.
+    if (lead != raw_lead) ++lead_saturations_;
+    q_cmd_[i] = q_ref_[i] + lead;
   }
-  q_cmd_[5] = cfg_.gripper_q;
+  q_cmd_[5] = cfg_.gripper_q;  // the jaw is held, never driven by tau
+  have_q_cmd_ = true;
+  bus_.set_tx_timeout_ns(capped_timeout_ns(cfg_.tx_timeout_ns));
   for (int i = 0; i < kDof; ++i) ticks[i] = q_to_tick(i, q_cmd_[i]);
-  if (!write_ticks(ticks)) fail_bus("sync_write");
+  if (!write_ticks(ticks)) {
+    ++failed_writes_;
+    fail_bus("sync_write", write_bus_fails_);
+  } else {
+    write_bus_fails_ = 0;
+  }
 }
 
-void HardwareBackend::write_goal_q(const Eigen::VectorXd& q) {
-  if (q.size() != kDof) {
-    throw std::invalid_argument("q size");
-  }
-  std::array<int, kDof> ticks{};
-  for (int i = 0; i < kDof; ++i) {
-    const double qi = (i == 5) ? cfg_.gripper_q : q[i];
-    ticks[i] = q_to_tick(i, qi);
-  }
-  if (!write_ticks(ticks)) fail_bus("sync_write");
+HardwareBackend::RunHealth HardwareBackend::health() const {
+  RunHealth h;
+  h.stale_reads = stale_reads_;
+  h.failed_writes = failed_writes_;
+  h.tick_clamps = tick_clamps_;
+  h.lead_saturations = lead_saturations_;
+  h.late_ticks = late_ticks_;
+  h.max_late_us = static_cast<double>(max_late_ns_) / 1000.0;
+  h.bus_timeouts = bus_.stats().timeouts;
+  h.bus_checksum_errors = bus_.stats().checksum_errors;
+  return h;
+}
+
+void HardwareBackend::reset_health() {
+  stale_reads_ = 0;
+  failed_writes_ = 0;
+  tick_clamps_ = 0;
+  lead_saturations_ = 0;
+  late_ticks_ = 0;
+  max_late_ns_ = 0;
+  read_bus_fails_ = 0;
+  write_bus_fails_ = 0;
+  bus_.reset_stats();
 }
 
 void HardwareBackend::gravity(const Eigen::VectorXd& q,
@@ -249,17 +310,28 @@ void HardwareBackend::gravity(const Eigen::VectorXd& q,
 }
 
 void HardwareBackend::step() {
-  const auto period = std::chrono::duration<double>(cfg_.dt);
+  const auto period =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(cfg_.dt));
+  // Arm on the first call WITHOUT consuming a period, then sleep on every call
+  // including the first. Arming to now+period and returning early made the
+  // first interval ~0 ms and the second ~10 ms, and no counter could see it.
   if (!period_armed_) {
-    next_wakeup_ = std::chrono::steady_clock::now() +
-                   std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                       period);
+    next_wakeup_ = std::chrono::steady_clock::now();
     period_armed_ = true;
-  } else {
-    next_wakeup_ +=
-        std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
-    sleep_until_monotonic(next_wakeup_);
   }
+  next_wakeup_ += period;
+  // t_ advances by exactly dt whether or not the deadline was met, so the
+  // logged time axis is nominal. Count overruns rather than let the log
+  // quietly claim 200 Hz that the bus did not deliver.
+  const auto now = std::chrono::steady_clock::now();
+  if (now > next_wakeup_) {
+    ++late_ticks_;
+    const int64_t late = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now - next_wakeup_).count();
+    if (late > max_late_ns_) max_late_ns_ = late;
+  }
+  sleep_until_monotonic(next_wakeup_);
   t_ += cfg_.dt;
 }
 
@@ -291,7 +363,8 @@ void HardwareBackend::reset() {
   qdot_.setZero();
   t_ = 0.0;
   period_armed_ = false;
-  bus_fails_ = 0;
+  read_bus_fails_ = 0;
+  write_bus_fails_ = 0;
 }
 
 void HardwareBackend::move_to(const Eigen::VectorXd& q_end_in, double duration) {

@@ -1,6 +1,6 @@
 # Payload-adaptive tracking: sim to SO-ARM101 hardware
 
-**Sim-to-real:** MuJoCo payload RLS recovers 102% of the computed-torque RMS
+**Sim-to-real:** MuJoCo payload RLS recovers 102.4% of the computed-torque RMS
 gap; on the STS3215 bus the same `q̈` identity is false (`raw_mass = −0.175 kg`).
 Hardware path is rest-current ID, calibrate, freeze, track. The four-mass
 campaign gives a **2.31× raw instrument scale**; the affine correction now runs
@@ -601,6 +601,10 @@ torque, raw static ID, affine-corrected static ID, and the original in-motion
 Offsets are final `target − q`; RMS is over `t ≥ 1.5 s`, four joints excluding
 wrist-roll.
 
+These logs predate `SCHED_FIFO`/`mlockall` integration in `hardware_run`.
+They establish tracking behavior, not RT execution; a replacement campaign
+requires all five controllers at both masses.
+
 | mass | controller | mass used [kg] | lift offset [rad] | elbow offset [rad] | RMS no roll [rad] | EE z [m] |
 |------|------------|---------------:|------------------:|-------------------:|------------------:|---------:|
 | 90 g | PD | — | −0.0133 | −0.0514 | 0.0268 | 0.132 |
@@ -616,12 +620,12 @@ wrist-roll.
 
 Affine correction vs raw static ID reduces elbow offset **78% / 83%** and
 RMS excluding roll **49% / 55%** at 90 / 180 g. It beats empty-model CT RMS
-by **31% / 45%**. Motion RLS estimates almost zero and reproduces CT-empty,
-confirming on both campaign masses that the simulation estimator does not
-transfer to the position-servo hardware.
+by **31% / 45%**. Motion RLS estimates almost zero and tracks close to CT-empty,
+tracking within 6.7% RMS at 90 g and 0.6% at 180 g. This confirms that the
+current simulation estimator does not transfer to the position-servo hardware.
 
-Logs: `docs/data/final_campaign/`.
-Recompute this table with `python3 tools/final_campaign_metrics.py`.
+Console logs and hardware CSVs: `docs/data/final_campaign/`. Recompute this
+table with `python3 tools/final_campaign_metrics.py`.
 
 **Status.** Sim Phases 4–5 and the hardware plant (bridge, `K_servo`,
 Present_Current `k_t`, rest-ID then freeze) are done. Hardware does **not**

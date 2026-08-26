@@ -26,6 +26,7 @@ int main(int argc, char** argv) {
   arm_control::FeetechBus bus;
   bus.open(port, 1000000);
   bus.set_rx_timeout_ns(5130000);
+  bus.set_tx_timeout_ns(5130000);
 
   const uint8_t off = 0;
   int failed = 0;

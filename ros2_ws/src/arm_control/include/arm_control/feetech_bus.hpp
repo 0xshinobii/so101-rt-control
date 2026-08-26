@@ -51,17 +51,26 @@ public:
   const FeetechStats& stats() const { return stats_; }
   void reset_stats() { stats_ = {}; }
 
-  // Read timeout for one status packet [ns]. Frozen later from measured RTT.
+  // Deadline budget for one complete request/response transaction [ns].
   void set_rx_timeout_ns(int64_t ns) { rx_timeout_ns_ = ns; }
+  // Deadline budget for a broadcast write with no status response [ns].
+  void set_tx_timeout_ns(int64_t ns) { tx_timeout_ns_ = ns; }
 
 private:
-  void tx(const uint8_t* data, size_t n);
+  bool wait_ready(short events, int64_t deadline_ns);
+  bool tx(const uint8_t* data, size_t n, int64_t deadline_ns);
+  bool drain_until(int64_t deadline_ns);
   bool rx_byte(uint8_t& b, int64_t deadline_ns);
-  bool rx_status(uint8_t expected_id, uint8_t* data, uint8_t data_len);
+  bool rx_status(uint8_t expected_id, uint8_t* data, uint8_t data_len,
+                 int64_t deadline_ns);
   static uint8_t checksum(const uint8_t* id_through_params, size_t n);
 
+  // Reused packet scratch. resize() on an already-large-enough vector does
+  // not allocate, so the steady-state hot path is allocation-free.
+  std::vector<uint8_t> pkt_;
   int fd_ = -1;
-  int64_t rx_timeout_ns_ = 5000000;  // 5 ms until measured
+  int64_t rx_timeout_ns_ = 2500000;  // measured max 1.72 ms
+  int64_t tx_timeout_ns_ = 750000;   // measured max 0.27 ms
   FeetechStats stats_;
 };
 

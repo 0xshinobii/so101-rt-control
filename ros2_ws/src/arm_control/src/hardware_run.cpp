@@ -1,5 +1,10 @@
-// Hardware tracking: τ from PD / CT / adaptive CT, realized as
-// q_cmd = q_des + clamp(τ / K_servo). Hang the payload before start.
+// Hardware tracking: τ from PD / CT / adaptive CT, driven by the same
+// ControlLoop the simulation node uses. HardwareBackend realizes τ as
+// q_cmd = q_des + clamp(τ / K_servo); see hardware_backend.cpp.
+// Hang the payload before start.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -17,10 +22,12 @@
 #include "arm_control/adaptive_computed_torque_controller.hpp"
 #include "arm_control/arm_types.hpp"
 #include "arm_control/computed_torque_controller.hpp"
+#include "arm_control/control_loop.hpp"
 #include "arm_control/controller.hpp"
 #include "arm_control/hardware_backend.hpp"
 #include "arm_control/payload_mass_rls.hpp"
 #include "arm_control/pd_controller.hpp"
+#include "arm_control/rt_thread.hpp"
 
 using arm_control::AdaptiveComputedTorqueController;
 using arm_control::ComputedTorqueController;
@@ -42,8 +49,6 @@ const Eigen::VectorXd kKp =
 const Eigen::VectorXd kKd = Eigen::VectorXd::Zero(kDof);
 const Eigen::VectorXd kComputedKp = Eigen::VectorXd::Constant(kDof, 40.0);
 const Eigen::VectorXd kComputedKd = Eigen::VectorXd::Constant(kDof, 4.0);
-const Eigen::VectorXd kKservo =
-    (Eigen::VectorXd(kDof) << 50.0, 90.0, 11.0, 50.0, 50.0, 50.0).finished();
 constexpr double kDuration = 4.0;
 constexpr double kReferenceDuration = 1.0;
 
@@ -59,15 +64,6 @@ void minimum_jerk_reference(double time, Eigen::VectorXd& q,
          kReferenceDuration;
   qddot = (60.0 * s - 180.0 * s2 + 120.0 * s3) * kTarget /
           (kReferenceDuration * kReferenceDuration);
-}
-
-void apply_bridge(const Eigen::VectorXd& q_des, const Eigen::VectorXd& tau,
-                  double max_lead, double gripper_q, Eigen::VectorXd& q_goal) {
-  q_goal = q_des;
-  for (int j = 0; j < kDof; ++j) {
-    q_goal[j] += std::clamp(tau[j] / kKservo[j], -max_lead, max_lead);
-  }
-  q_goal[5] = gripper_q;
 }
 
 // Home Φ_g ≈ 0 (links stacked), so m = (τ − g)/Φ is friction/LSB noise.
@@ -108,11 +104,20 @@ Eigen::VectorXd hold_current(HardwareBackend& plant, const Eigen::VectorXd& q,
   return average_amps(plant);
 }
 
+// One encoder LSB. Jaw drift below this is unresolvable, not absence of drift.
+constexpr double kTickRad = 2.0 * M_PI / 4096.0;
+
 double identify_mass_this_run(HardwareBackend& plant,
                               AdaptiveComputedTorqueController& adaptive) {
   plant.set_motion_profile(30, 0);
   Eigen::VectorXd q_des = kTarget;
   q_des[5] = plant.gripper_q();
+  // The affine calibration was fitted with no grasp change between
+  // identification and tracking, so the grasp must not be re-established here.
+  // Instead, record whether the two-way approach moved the jaw at all.
+  Eigen::VectorXd q_probe(kDof), qdot_probe(kDof);
+  plant.read_state(q_probe, qdot_probe);
+  const double jaw_before = q_probe[5];
   plant.move_to(q_des, kIdGotoS);
   const Eigen::VectorXd amps_up = hold_current(plant, q_des, +1.0);
   const Eigen::VectorXd amps_dn = hold_current(plant, q_des, -1.0);
@@ -130,6 +135,18 @@ double identify_mass_this_run(HardwareBackend& plant,
   home[5] = plant.gripper_q();
   plant.move_to(home, kIdHomeS);
   plant.set_motion_profile(0, 0);
+  plant.read_state(q_probe, qdot_probe);
+  const double jaw_drift = q_probe[5] - jaw_before;
+  std::printf("id  jaw q %+.4f -> %+.4f rad  drift %+.4f (%.1f LSB)\n",
+              jaw_before, q_probe[5], jaw_drift,
+              std::abs(jaw_drift) / kTickRad);
+  if (std::abs(jaw_drift) > 2.0 * kTickRad) {
+    std::fprintf(stderr,
+                 "warning: jaw moved %.1f LSB during identification — the "
+                 "payload may sit differently than when its mass was measured, "
+                 "and the affine calibration assumes it does not\n",
+                 std::abs(jaw_drift) / kTickRad);
+  }
   return num / den;
 }
 
@@ -251,8 +268,9 @@ int main(int argc, char** argv) {
         "hardware  controller=%s  payload=%.0f g (physical)  "
         "K=(%.0f,%.0f,%.0f,%.0f,%.0f,%.0f)\n"
         "hold %.0f g in the jaws — squeeze, home, then 4 s min-jerk\n",
-        controller_name.c_str(), payload_g, kKservo[0], kKservo[1], kKservo[2],
-        kKservo[3], kKservo[4], kKservo[5], payload_g);
+        controller_name.c_str(), payload_g, cfg.k_servo[0], cfg.k_servo[1],
+        cfg.k_servo[2], cfg.k_servo[3], cfg.k_servo[4], cfg.k_servo[5],
+        payload_g);
     if (adaptive) {
       if (motion_rls) {
         std::printf(
@@ -276,7 +294,6 @@ int main(int argc, char** argv) {
     std::vector<Sample> log(steps);
     std::vector<double> compensated_mass_log(
         steps, std::numeric_limits<double>::quiet_NaN());
-    Eigen::VectorXd q(kDof), qdot(kDof), tau(kDof), q_goal(kDof);
     Eigen::VectorXd q_ref(kDof), qdot_ref(kDof), qddot_ref(kDof);
 
     if (adaptive && motion_rls) {
@@ -296,30 +313,48 @@ int main(int argc, char** argv) {
                   adaptive->compensated_payload_mass());
     }
 
-    plant.read_state(q, qdot);
+    // Same ControlLoop the simulation node runs; only the backend differs.
+    // Logging therefore follows the shared convention: q/qdot/tau are the
+    // PRE-step state and the torque computed from it, t is POST-step.
+    arm_control::ControlLoop loop(plant, *controller, kTarget);
+
+    // Enter RT policy only after construction, homing, ID and log allocation.
+    // The tracking loop runs on this thread; setup does not need FIFO priority.
+    // docker/run_i7.sh supplies CAP_SYS_NICE and rtprio/memlock limits.
+    const arm_control::RtStatus rt =
+        arm_control::configure_rt_thread(arm_control::RtConfig{});
+    std::printf("rt  mlockall=%d fifo=%d affinity=%d cstates=%d\n",
+                rt.memory_locked, rt.fifo_set, rt.affinity_set,
+                rt.cstates_suppressed);
+    if (!rt.error.empty()) {
+      std::fprintf(stderr, "rt warnings: %s\n", rt.error.c_str());
+    }
+    if (!rt.fifo_set || !rt.memory_locked) {
+      std::fprintf(stderr,
+                   "warning: not running SCHED_FIFO with locked memory; this "
+                   "run is not a real-time measurement\n");
+    }
+    plant.reset_health();
 
     for (int i = 0; i < steps; ++i) {
       minimum_jerk_reference(i * dt, q_ref, qdot_ref, qddot_ref);
-      controller->compute(q, qdot, q_ref, qdot_ref, qddot_ref, tau);
-      apply_bridge(q_ref, tau, cfg.max_lead_q, plant.gripper_q(), q_goal);
-      plant.write_goal_q(q_goal);
-      plant.step();
-      plant.read_state(q, qdot);
-      Sample& s = log[i];
-      s.t = plant.time();
-      for (int j = 0; j < kDof; ++j) {
-        s.q[j] = q[j];
-        s.qd[j] = qdot[j];
-        s.tau[j] = tau[j];
-      }
-      const Eigen::Vector3d ee = plant.ee_position();
-      s.ee[0] = ee.x();
-      s.ee[1] = ee.y();
-      s.ee[2] = ee.z();
-      s.estimated_payload_mass = controller->estimated_payload_mass();
+      loop.set_reference(q_ref, qdot_ref, qddot_ref);
+      loop.step_once(log[i]);
       if (adaptive) {
         compensated_mass_log[i] = adaptive->compensated_payload_mass();
       }
+    }
+
+    const auto health = plant.health();
+    // File output and teardown are not control work; leave FIFO policy first.
+    if (rt.fifo_set) {
+      sched_param normal{};
+      if (pthread_setschedparam(pthread_self(), SCHED_OTHER, &normal) != 0) {
+        std::fprintf(stderr, "warning: failed to restore SCHED_OTHER\n");
+      }
+    }
+    if (rt.memory_locked && munlockall() != 0) {
+      std::fprintf(stderr, "warning: failed to unlock process memory\n");
     }
 
     std::ofstream out(csv_path);
@@ -331,7 +366,16 @@ int main(int argc, char** argv) {
           << " mass_cal_scale=" << mass_cal_scale
           << " mass_cal_offset=" << mass_cal_offset;
     }
-    out << "\n";
+    out << " rt_fifo=" << (rt.fifo_set ? 1 : 0)
+        << " rt_mlockall=" << (rt.memory_locked ? 1 : 0)
+        << " stale_reads=" << health.stale_reads
+        << " failed_writes=" << health.failed_writes
+        << " tick_clamps=" << health.tick_clamps
+        << " lead_saturations=" << health.lead_saturations
+        << " late_ticks=" << health.late_ticks
+        << " max_late_us=" << health.max_late_us
+        << " bus_timeouts=" << health.bus_timeouts
+        << " bus_checksum_errors=" << health.bus_checksum_errors << "\n";
     out << "t";
     for (int i = 0; i < kDof; ++i) out << ",q" << i;
     for (int i = 0; i < kDof; ++i) out << ",qd" << i;
@@ -354,8 +398,27 @@ int main(int argc, char** argv) {
         "ee=(%.4f,%.4f,%.4f)\n",
         csv_path.c_str(), last.q[0], last.q[1], last.q[2], last.q[3],
         last.q[4], last.q[5], last.ee[0], last.ee[1], last.ee[2]);
+    std::printf(
+        "run health  stale_reads=%d  failed_writes=%d  tick_clamps=%d  "
+        "lead_saturations=%d  late_ticks=%d (max %.1f us)  bus_timeouts=%llu  "
+        "checksum_errors=%llu\n",
+        health.stale_reads, health.failed_writes, health.tick_clamps,
+        health.lead_saturations, health.late_ticks, health.max_late_us,
+        static_cast<unsigned long long>(health.bus_timeouts),
+        static_cast<unsigned long long>(health.bus_checksum_errors));
+    if (health.stale_reads || health.failed_writes || health.tick_clamps ||
+        health.lead_saturations || health.late_ticks || health.bus_timeouts ||
+        health.bus_checksum_errors) {
+      std::fprintf(stderr,
+                   "warning: this run is not clean — a stale read duplicates "
+                   "a sample, a failed write leaves the previous command in "
+                   "place, a tick clamp truncates a command, a lead "
+                   "saturation means the controller wanted more authority than "
+                   "the bridge can express, and a late tick means the logged "
+                   "time axis drifted from real time\n");
+    }
     if (adaptive) {
-      std::printf("RLS raw_mass=%.4f kg  compensated=%.4f kg  updates=%zu\n",
+      std::printf("mass raw=%.4f kg  compensated=%.4f kg  estimator updates=%zu\n",
                   adaptive->estimated_payload_mass(),
                   adaptive->compensated_payload_mass(),
                   adaptive->estimator_updates());

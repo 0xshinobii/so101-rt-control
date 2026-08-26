@@ -15,6 +15,14 @@ public:
   // (pre-sized to dof(), so no allocation on the hot path).
   virtual void read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) = 0;
 
+  // Some backends cannot command torque directly and realize it as an offset
+  // from the commanded position (admittance-style). Those need the reference
+  // the torque was computed against. ControlLoop calls this immediately before
+  // apply_torque(). Deliberately pure: a torque-commanding backend implements
+  // it as a no-op in one line, but a position-realized backend that forgot it
+  // would silently command against a zero reference and slam to the origin.
+  virtual void set_reference_position(const Eigen::VectorXd& q_des) = 0;
+
   // Command joint torques; the backend realizes them (sim: write d->ctrl).
   virtual void apply_torque(const Eigen::VectorXd& tau) = 0;
 

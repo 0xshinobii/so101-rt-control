@@ -8,32 +8,33 @@
 <rect x="0" y="0" width="1160" height="870" rx="0" fill="#ffffff" stroke="#ffffff" stroke-width="1"/>
 <text x="40" y="42" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" fill="#0f172a" font-weight="700" text-anchor="start">SO-101 payload-adaptive control — where the real-time boundary lives</text>
 <text x="40" y="63" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#64748b" font-weight="400" text-anchor="start">ROS 2 Jazzy · C++17 · PREEMPT_RT · Pinocchio · MuJoCo / SO-ARM101   —   200 Hz, 5 ms period, one code path for sim and hardware</text>
-<rect x="40" y="86" width="760" height="152" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
-<text x="56" y="108" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="700" text-anchor="start" letter-spacing="1.4">NON-REAL-TIME — rclcpp EXECUTOR THREAD</text>
-<text x="56" y="125" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5b6b7f" font-weight="400" text-anchor="start">may allocate, block, log, take locks — none of it can stall the servo loop</text>
-<rect x="56" y="136" width="168" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-<text x="68" y="156" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">params.yaml</text>
-<text x="68" y="171" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">gains, target, rate</text>
-<text x="68" y="186" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">rt_priority: 80</text>
-<text x="68" y="201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">rate_hz: 200.0</text>
-<rect x="236" y="136" width="176" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-<text x="248" y="156" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">rclcpp::spin()</text>
-<text x="248" y="171" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">executor thread; never</text>
-<text x="248" y="186" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">enters the control path</text>
-<rect x="424" y="136" width="184" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-<text x="436" y="156" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">wall timer 20 ms</text>
-<text x="436" y="171" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">drains the ring,</text>
-<text x="436" y="186" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">keeps latest sample</text>
-<text x="436" y="201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">drain_and_publish()</text>
-<rect x="620" y="136" width="164" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-<text x="632" y="156" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">publishers</text>
-<text x="632" y="171" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">best-effort telemetry</text>
-<text x="632" y="186" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">/joint_states</text>
-<text x="632" y="201" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">/arm_metrics</text>
-<line x1="224" y1="179" x2="234" y2="179" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
-<line x1="412" y1="179" x2="422" y2="179" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
-<line x1="608" y1="179" x2="618" y2="179" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
-<line x1="140" y1="222" x2="140" y2="316" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrowFaint)" stroke-dasharray="4 4"/>
+<text x="40" y="80" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5b6b7f" font-weight="400" text-anchor="start">This is the ROS 2 node. The hardware runner shares everything below the red line and logs to CSV instead of publishing.</text>
+<rect x="40" y="96" width="760" height="152" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+<text x="56" y="118" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="700" text-anchor="start" letter-spacing="1.4">NON-REAL-TIME — rclcpp EXECUTOR THREAD</text>
+<text x="56" y="135" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5b6b7f" font-weight="400" text-anchor="start">may allocate, block, log, take locks — none of it can stall the servo loop</text>
+<rect x="56" y="146" width="168" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<text x="68" y="166" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">params.yaml</text>
+<text x="68" y="181" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">gains, target, rate</text>
+<text x="68" y="196" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">rt_priority: 80</text>
+<text x="68" y="211" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">rate_hz: 200.0</text>
+<rect x="236" y="146" width="176" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<text x="248" y="166" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">rclcpp::spin()</text>
+<text x="248" y="181" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">executor thread; never</text>
+<text x="248" y="196" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">enters the control path</text>
+<rect x="424" y="146" width="184" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<text x="436" y="166" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">wall timer 20 ms</text>
+<text x="436" y="181" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">drains the ring,</text>
+<text x="436" y="196" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">keeps latest sample</text>
+<text x="436" y="211" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">drain_and_publish()</text>
+<rect x="620" y="146" width="164" height="86" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<text x="632" y="166" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">publishers</text>
+<text x="632" y="181" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">best-effort telemetry</text>
+<text x="632" y="196" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">/joint_states</text>
+<text x="632" y="211" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">/arm_metrics</text>
+<line x1="224" y1="189" x2="234" y2="189" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
+<line x1="412" y1="189" x2="422" y2="189" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
+<line x1="608" y1="189" x2="618" y2="189" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrow)"/>
+<line x1="140" y1="232" x2="140" y2="316" stroke="#64748b" stroke-width="1.4" marker-end="url(#arrowFaint)" stroke-dasharray="4 4"/>
 <text x="148" y="252" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#5b6b7f" font-weight="400" text-anchor="start">read once at</text>
 <text x="148" y="264" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#5b6b7f" font-weight="400" text-anchor="start">construction</text>
 <line x1="40" y1="290" x2="1120" y2="290" stroke="#dc2626" stroke-width="3" stroke-dasharray="11 7"/>
@@ -42,7 +43,7 @@
 <text x="516" y="282" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">SpscRing&lt;Sample&gt;</text>
 <text x="516" y="298" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">lock-free, 1024 slots, wait-free push()</text>
 <text x="516" y="312" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#dc2626" font-weight="400" text-anchor="start">full → drop the sample, never block</text>
-<line x1="560" y1="258" x2="560" y2="226" stroke="#15803d" stroke-width="1.4" marker-end="url(#arrowGreen)"/>
+<line x1="560" y1="258" x2="560" y2="236" stroke="#15803d" stroke-width="1.4" marker-end="url(#arrowGreen)"/>
 <text x="824" y="270" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">telemetry is best-effort.</text>
 <text x="824" y="284" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#dc2626" font-weight="600" text-anchor="start">control is not.</text>
 <rect x="40" y="322" width="760" height="272" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="1"/>
@@ -57,8 +58,8 @@
 <text x="68" y="480" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">q_des, q̇_des, q̈_des</text>
 <rect x="236" y="430" width="196" height="60" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
 <text x="248" y="450" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">ControlLoop::step_once()</text>
-<text x="248" y="465" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">pre-allocated buffers,</text>
-<text x="248" y="480" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">no alloc · no I/O · no rclcpp</text>
+<text x="248" y="465" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">pre-sized state/reference,</text>
+<text x="248" y="480" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">shared path · no rclcpp</text>
 <rect x="444" y="430" width="204" height="60" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
 <text x="456" y="450" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#0f172a" font-weight="600" text-anchor="start">Controller  (interface)</text>
 <text x="456" y="465" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">PD  |  computed torque  |</text>
@@ -117,7 +118,7 @@
 <rect x="842" y="440" width="10" height="10" rx="2" fill="#dc2626" stroke="#dc2626" stroke-width="1"/>
 <text x="860" y="448" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">OS wakeup jitter</text>
 <text x="1058" y="448" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10.5" fill="#0f172a" font-weight="600" text-anchor="end">11 µs</text>
-<text x="1102" y="448" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="end">0.2%</text>
+<text x="1102" y="448" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="end">0.23%</text>
 <rect x="842" y="459" width="10" height="10" rx="2" fill="#0369a1" stroke="#0369a1" stroke-width="1"/>
 <text x="860" y="467" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#64748b" font-weight="400" text-anchor="start">serial bus I/O</text>
 <text x="1058" y="467" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10.5" fill="#0f172a" font-weight="600" text-anchor="end">1.90 ms</text>
@@ -150,8 +151,8 @@
 <line x1="842" y1="670" x2="1102" y2="670" stroke="#eef2f6" stroke-width="1"/>
 <rect x="842" y="700" width="260" height="98" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
 <text x="856" y="724" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#dc2626" font-weight="700" text-anchor="start">The CPU was never the bottleneck.</text>
-<text x="856" y="748" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">PREEMPT_RT buys a 5–11 µs wakeup on a</text>
-<text x="856" y="763" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">5000 µs period. The servo bus spends 170×</text>
-<text x="856" y="778" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">more of that budget than the scheduler.</text>
+<text x="856" y="748" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">Loaded p99.9 wakeup is 11.34 µs on a</text>
+<text x="856" y="763" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">5000 µs period. The servo bus is ~168×</text>
+<text x="856" y="778" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#7f1d1d" font-weight="400" text-anchor="start">longer than the scheduler latency.</text>
 <text x="40" y="852" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="10" fill="#5b6b7f" font-weight="400" text-anchor="start">Source: RESULTS.md · regenerate with  python3 tools/plot_architecture.py</text>
 </svg>

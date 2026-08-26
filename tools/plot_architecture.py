@@ -2,10 +2,11 @@
 """Generate docs/figures/architecture.svg -- the stack diagram with the
 hard-real-time boundary marked explicitly.
 
-The diagram makes one distinction explicit: which code is allowed to block, and
-which is not. Everything below the red dashed line runs on a SCHED_FIFO thread
-that must never allocate, take a lock, or touch rclcpp. Everything above it may
-do all three.
+The diagram makes one distinction explicit: which code is allowed to touch
+rclcpp and publishing infrastructure. Everything below the red dashed line runs
+on a SCHED_FIFO thread and avoids rclcpp; the hardware backend necessarily
+performs blocking serial I/O inside that thread. Everything above it may
+allocate, log and take locks.
 
 Numbers annotated on the figure are measured; see RESULTS.md for provenance.
 
@@ -131,6 +132,11 @@ text(40, 42, "SO-101 payload-adaptive control — where the real-time boundary l
 text(40, 63, "ROS 2 Jazzy · C++17 · PREEMPT_RT · Pinocchio · MuJoCo / SO-ARM101   "
              "—   200 Hz, 5 ms period, one code path for sim and hardware",
      size=11.5, fill=MUTED)
+# The telemetry half exists only in the ROS node; say so on the figure rather
+# than letting the reader assume the hardware runner has it too.
+text(40, 80, "This is the ROS 2 node. The hardware runner shares everything below "
+             "the red line and logs to CSV instead of publishing.",
+     size=10.5, fill=FAINT)
 
 # Column geometry. Every box below is placed so that its RIGHT edge stays
 # inside the panel that contains it -- see the assertions at the end.
@@ -142,30 +148,30 @@ BX, BW = 824, 296              # right column (the timing budget)
 # Non-real-time zone
 # ---------------------------------------------------------------------------
 
-rect(LEFT, 86, COLW, 152, fill="#f1f5f9", stroke="#cbd5e1", rx=10)
-zone_label(LEFT + 16, 108, "NON-REAL-TIME — rclcpp EXECUTOR THREAD", MUTED)
-text(LEFT + 16, 125, "may allocate, block, log, take locks — none of it can stall "
+rect(LEFT, 96, COLW, 152, fill="#f1f5f9", stroke="#cbd5e1", rx=10)
+zone_label(LEFT + 16, 118, "NON-REAL-TIME — rclcpp EXECUTOR THREAD", MUTED)
+text(LEFT + 16, 135, "may allocate, block, log, take locks — none of it can stall "
      "the servo loop", size=10.5, fill=FAINT)
 
-box(56, 136, 168, 86, "params.yaml",
+box(56, 146, 168, 86, "params.yaml",
     lines=("gains, target, rate",),
     mono_lines=("rt_priority: 80", "rate_hz: 200.0"))
-box(236, 136, 176, 86, "rclcpp::spin()",
+box(236, 146, 176, 86, "rclcpp::spin()",
     lines=("executor thread; never", "enters the control path"))
-box(424, 136, 184, 86, "wall timer 20 ms",
+box(424, 146, 184, 86, "wall timer 20 ms",
     lines=("drains the ring,", "keeps latest sample"),
     mono_lines=("drain_and_publish()",))
-box(620, 136, 164, 86, "publishers",
+box(620, 146, 164, 86, "publishers",
     mono_lines=("/joint_states", "/arm_metrics"),
     lines=("best-effort telemetry",))
 
-arrow(224, 179, 234, 179)
-arrow(412, 179, 422, 179)
-arrow(608, 179, 618, 179)
+arrow(224, 189, 234, 189)
+arrow(412, 189, 422, 189)
+arrow(608, 189, 618, 189)
 
 # Parameters are read once, at construction. The arrow stops above the RT
 # panel so it never crosses the zone labels inside it.
-arrow(140, 222, 140, 316, dash="4 4", marker="arrowFaint")
+arrow(140, 232, 140, 316, dash="4 4", marker="arrowFaint")
 text(148, 252, "read once at", size=10, fill=FAINT)
 text(148, 264, "construction", size=10, fill=FAINT)
 
@@ -185,7 +191,7 @@ text(516, BY + 8, "lock-free, 1024 slots, wait-free push()", size=10, fill=MUTED
 text(516, BY + 22, "full → drop the sample, never block", size=10, fill=RT_RED)
 
 # Consumer side: the 20 ms wall timer drains it.
-arrow(560, BY - 32, 560, 226, stroke=GREEN, marker="arrowGreen")
+arrow(560, BY - 32, 560, 236, stroke=GREEN, marker="arrowGreen")
 
 # Sits clear of the dashed line rather than being struck through by it.
 text(BX, BY - 20, "telemetry is best-effort.", size=10, fill=MUTED)
@@ -213,7 +219,7 @@ box(56, 430, 168, 60, "min-jerk reference",
     mono_lines=("q_des, q̇_des, q̈_des",),
     lines=("1.0 s, computed in-loop",))
 box(236, 430, 196, 60, "ControlLoop::step_once()",
-    lines=("pre-allocated buffers,", "no alloc · no I/O · no rclcpp"))
+    lines=("pre-sized state/reference,", "shared path · no rclcpp"))
 box(444, 430, 204, 60, "Controller  (interface)",
     lines=("PD  |  computed torque  |", "adaptive CT + payload RLS"))
 box(660, 430, 124, 60, "torque out",
@@ -306,7 +312,7 @@ text(bar_x + bar_w, bar_y + bar_h + 14, "5 ms  (one control period)", size=10,
      fill=FAINT, anchor="end")
 
 legend = [
-    (RT_RED, RT_RED, "OS wakeup jitter", "11 µs", "0.2%"),
+    (RT_RED, RT_RED, "OS wakeup jitter", "11 µs", "0.23%"),
     (PLANT_BLUE, PLANT_BLUE, "serial bus I/O", "1.90 ms", "38%"),
     ("#e2e8f0", "#94a3b8", "headroom", "3.09 ms", "62%"),
 ]
@@ -342,11 +348,11 @@ for label, value in rows:
 rect(BX + 18, 700, BW - 36, 98, fill="#fef2f2", stroke="#fecaca", rx=8)
 text(BX + 32, 724, "The CPU was never the bottleneck.", size=12,
      weight="700", fill=RT_RED)
-text(BX + 32, 748, "PREEMPT_RT buys a 5–11 µs wakeup on a", size=10.5,
+text(BX + 32, 748, "Loaded p99.9 wakeup is 11.34 µs on a", size=10.5,
      fill="#7f1d1d")
-text(BX + 32, 763, "5000 µs period. The servo bus spends 170×", size=10.5,
+text(BX + 32, 763, "5000 µs period. The servo bus is ~168×", size=10.5,
      fill="#7f1d1d")
-text(BX + 32, 778, "more of that budget than the scheduler.", size=10.5,
+text(BX + 32, 778, "longer than the scheduler latency.", size=10.5,
      fill="#7f1d1d")
 
 
@@ -359,14 +365,14 @@ text(40, H - 18, "Source: RESULTS.md · regenerate with  "
 # ---------------------------------------------------------------------------
 
 PANELS = {
-    "non-RT":   (LEFT, 86, RIGHT, 238),
+    "non-RT":   (LEFT, 96, RIGHT, 248),
     "RT":       (LEFT, 322, RIGHT, 594),
     "backends": (LEFT, 654, RIGHT, 826),
     "budget":   (BX, 322, BX + BW, 826),
 }
 CHILDREN = [
-    ("non-RT", 56, 136, 224, 222), ("non-RT", 236, 136, 412, 222),
-    ("non-RT", 424, 136, 608, 222), ("non-RT", 620, 136, 784, 222),
+    ("non-RT", 56, 146, 224, 232), ("non-RT", 236, 146, 412, 232),
+    ("non-RT", 424, 146, 608, 232), ("non-RT", 620, 146, 784, 232),
     ("RT", 56, 372, 700, 416), ("RT", 56, 430, 224, 490),
     ("RT", 236, 430, 432, 490), ("RT", 444, 430, 648, 490),
     ("RT", 660, 430, 784, 490), ("RT", 236, 506, 432, 582),

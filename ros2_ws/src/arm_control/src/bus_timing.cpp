@@ -122,6 +122,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   bus.set_rx_timeout_ns(10000000);
+  bus.set_tx_timeout_ns(10000000);
 
   for (uint8_t id : args.ids) {
     if (!bus.ping(id)) {

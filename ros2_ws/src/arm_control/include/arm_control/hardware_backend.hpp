@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,11 +25,13 @@ public:
     std::string calib_path;
     std::string urdf_path = "models/so101/so101_dynamics.urdf";
     double dt = 0.005;           // frozen f_hw = 200 Hz
-    double k_servo = 50.0;       // N·m/rad; per-joint from g(q)/droop later
-    double max_delta_q = 0.03;   // rad per control step
+    // N·m/rad, per joint. Only the elbow (index 2) is identified from
+    // g(q)/droop; the rest are frozen placeholders, not a calibrated map.
+    std::array<double, kDof> k_servo = {50.0, 90.0, 11.0, 50.0, 50.0, 50.0};
     double max_lead_q = 0.12;    // rad; Goal_Position stays near present q
     int goal_speed = 40;         // Feetech units; 0 = unlimited (unsafe)
-    int64_t rx_timeout_ns = 5130000;
+    int64_t rx_timeout_ns = 2500000;  // full six-servo read; max measured 1.72 ms
+    int64_t tx_timeout_ns = 750000;   // kernel-queue drain; max measured 0.27 ms
     int max_bus_fails = 3;
     double home_duration = 4.0;
     double gripper_q = 0.0;      // held during home + tracking
@@ -46,8 +49,8 @@ public:
   HardwareBackend& operator=(const HardwareBackend&) = delete;
 
   void read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) override;
+  void set_reference_position(const Eigen::VectorXd& q_des) override;
   void apply_torque(const Eigen::VectorXd& tau) override;
-  void write_goal_q(const Eigen::VectorXd& q);
   void gravity(const Eigen::VectorXd& q, Eigen::VectorXd& tau) const;
   void move_to(const Eigen::VectorXd& q_end, double duration);
   void set_motion_profile(uint8_t acc, uint16_t speed);
@@ -57,6 +60,23 @@ public:
   void step() override;
   Eigen::Vector3d ee_position() override;
   void reset() override;
+
+  // Run health. Every one of these is a silent failure without a counter:
+  // a stale read duplicates the previous sample into the log, a tick clamp
+  // truncates a command, and a late tick means the logged time axis (a
+  // nominal counter) has drifted from real time.
+  struct RunHealth {
+    int stale_reads = 0;      // sync_read failures that returned the last q
+    int failed_writes = 0;    // sync_write failures; prior command remained
+    int tick_clamps = 0;      // goals truncated to [min_ticks, max_ticks]
+    int lead_saturations = 0; // ticks where tau/K_servo hit +/- max_lead_q
+    int late_ticks = 0;       // iterations that missed the period deadline
+    double max_late_us = 0.0; // worst overrun
+    uint64_t bus_timeouts = 0;
+    uint64_t bus_checksum_errors = 0;
+  };
+  RunHealth health() const;
+  void reset_health();
 
   double gripper_q() const { return cfg_.gripper_q; }
   int dof() const override { return kDof; }
@@ -72,7 +92,9 @@ private:
   bool write_ticks(const std::array<int, kDof>& ticks);
   void ticks_to_q(const std::array<int, kDof>& ticks, Eigen::VectorXd& q) const;
   int q_to_tick(int joint, double q) const;
-  void fail_bus(const char* what);
+  void fail_bus(const char* what, int& consecutive_failures);
+  void begin_io_cycle();
+  int64_t capped_timeout_ns(int64_t budget_ns) const;
 
   Config cfg_;
   std::unique_ptr<PinocchioDynamics> dynamics_;
@@ -82,13 +104,25 @@ private:
   Eigen::VectorXd q_;
   Eigen::VectorXd qdot_;
   Eigen::VectorXd q_cmd_;
+  Eigen::VectorXd q_ref_;          // last reference handed to apply_torque
+  Eigen::VectorXd q_new_;          // read_state scratch; kept off the heap
+  std::vector<uint8_t> rx_buf_;    // sync_read scratch
+  std::vector<uint8_t> tx_buf_;    // sync_write scratch
+  mutable int tick_clamps_ = 0;    // q_to_tick is const; the counter is not
+  int lead_saturations_ = 0;
+  int stale_reads_ = 0;
+  int failed_writes_ = 0;
+  int late_ticks_ = 0;
+  int64_t max_late_ns_ = 0;
   bool have_q_ = false;
   bool have_q_cmd_ = false;
-  int bus_fails_ = 0;
+  int read_bus_fails_ = 0;
+  int write_bus_fails_ = 0;
   int gripper_hold_tick_ = -1;
   double t_ = 0.0;
   bool period_armed_ = false;
   std::chrono::steady_clock::time_point next_wakeup_{};
+  int64_t cycle_deadline_ns_ = 0;
 };
 
 }  // namespace arm_control

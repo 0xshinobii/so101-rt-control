@@ -30,6 +30,8 @@ void ControlLoop::step_once(Sample& out) {
   // PRE-step read: q, qdot -> the torque is computed from these.
   plant_.read_state(q_, qdot_);
   controller_.compute(q_, qdot_, q_des_, qdot_des_, qddot_des_, tau_);
+  // Position-realized backends need the reference alongside the torque.
+  plant_.set_reference_position(q_des_);
   plant_.apply_torque(tau_);
 
   // Advance the sim by one control period.

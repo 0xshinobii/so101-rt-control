@@ -25,6 +25,9 @@ public:
   MujocoBackend& operator=(const MujocoBackend&) = delete;
 
   void read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) override;
+  // MuJoCo writes torque straight to d->ctrl, so the reference is irrelevant
+  // here. Explicit rather than inherited: see PlantInterface.
+  void set_reference_position(const Eigen::VectorXd& /*q_des*/) override {}
   void apply_torque(const Eigen::VectorXd& tau) override;
   void step() override;
   Eigen::Vector3d ee_position() override;
