@@ -1,23 +1,27 @@
-# so101-rt-control
+# Payload-adaptive tracking from MuJoCo to the SO-ARM101
 
-**Payload-adaptive trajectory tracking on a 5-DOF arm, as a real-time C++ / ROS 2
-stack — taken from MuJoCo to real hardware, with the sim-to-real gap measured.**
+**One C++ / ROS 2 control loop, two plants, and a measured sim-to-real gap:
+the estimator that recovers payload in simulation does not transfer, so
+hardware identifies mass at rest, calibrates, freezes, then tracks.**
 
 One control loop, written once, runs against two backends behind a single
 `PlantInterface`: MuJoCo in simulation, and a ThinkRobotics SO-ARM101 over a
-Feetech serial bus. The current runners configure the loop thread `SCHED_FIFO` with
-`mlockall` under a `PREEMPT_RT` kernel and drive it at 200 Hz. Controllers (PD,
-computed torque, adaptive computed torque with online payload estimation) never
-learn which side of the plant boundary they are on.
+Feetech serial bus. Controllers (PD, computed torque, adaptive computed torque
+with online payload estimation) never learn which side of the plant boundary
+they are on.
 
-The sim-to-real gap is the substance of the project. The online payload estimator
-that recovers **102.4% of the computed-torque error gap in simulation** recovers
-**almost none of it on hardware** — 0.8 g of a 90 g payload, 9.4 g of a 180 g one,
-after 799 updates. The failure comes from coupled measurement and actuator-model
-mismatches that controller-gain tuning alone does not fix. The hardware path is
-therefore a different estimator: identify the mass
-statically from motor current at rest, calibrate the instrument, freeze it, then
-track. Applying that correction inside
+The current runners request `SCHED_FIFO` and `mlockall` and drive the loop at
+200 Hz. The hardware tracking campaign below predates that integration — it
+measures tracking, not real-time execution.
+
+The sim-to-real gap is the substance of the project. Online payload RLS recovers
+**102.4% of the empty-model-to-perfect-model computed-torque RMS gap in
+simulation**. On hardware the same estimator returns **0.8 g of a 90 g payload
+and 9.4 g of a 180 g one** (799 updates) and tracks like the empty model. The
+failure comes from coupled measurement and actuator-model mismatches that
+controller-gain tuning alone does not fix. The hardware path is therefore a
+different estimator: identify the mass statically from motor current at rest,
+calibrate the instrument, freeze it, then track. Applying that correction inside
 the controller cuts the elbow's steady-state offset by **78–83%** and the arm RMS
 excluding wrist-roll by **49–55%** versus the same static ID without calibration.
 
@@ -73,7 +77,7 @@ locks and publish. It runs a 20 ms wall timer that drains telemetry and publishe
 *drops* the sample when the consumer falls behind. Telemetry is best-effort;
 control is not. This queue is the only thing that crosses.
 
-**Below the line** — the control thread, configured `SCHED_FIFO` 80 with
+**Below the line** — the control thread, which requests `SCHED_FIFO` 80 with
 `mlockall(MCL_CURRENT|MCL_FUTURE)`, `/dev/cpu_dma_latency = 0` and an optional
 CPU pin. Its period comes from `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`
 — an absolute deadline, so a late wakeup does not accumulate.
@@ -83,17 +87,16 @@ CPU pin. Its period comes from `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)`
 **What the backend does inside that iteration differs, and the difference is
 real.** MuJoCo writes torque to `d->ctrl` and returns — no I/O at all. The
 hardware backend must talk to a serial bus, so every iteration performs one
-blocking `sync_write` and one blocking `sync_read`, together ~2.1 ms of the 5 ms
-period. That I/O is inherent to the plant, not an artefact. Request and command
-buffers are reused, and the receive decoder processes payload bytes without heap
-scratch. `sync_read` and `sync_write` each have their own transaction deadline
-(2.5 ms / 0.75 ms), and both are also capped by the remaining 5 ms control
-period so a slow read cannot leave a full extra budget for the write. Writes
-`ppoll()` for buffer space and wait until `TIOCOUTQ == 0` (kernel queue
-drained into the USB stack, not wire-time) — no busy-spin, no unbounded
-`tcdrain()`.
-Run-health counters report stale reads, failed writes, truncated commands,
-bridge saturations and missed deadlines.
+blocking `sync_read` then one blocking `sync_write`, together ~2.14 ms of the
+5 ms period. That I/O is inherent to the plant, not an artefact. Request and
+command buffers are reused, and the receive decoder processes payload bytes
+without heap scratch. `sync_read` and `sync_write` each have their own
+transaction deadline (2.5 ms / 0.75 ms), and both are also capped by the
+remaining 5 ms control period so a slow read cannot leave a full extra budget
+for the write. Writes `ppoll()` for buffer space and wait until `TIOCOUTQ == 0`
+(kernel queue drained into the USB stack, not wire-time) — no busy-spin, no
+unbounded `tcdrain()`. Run-health counters report stale reads, failed writes,
+truncated commands, bridge saturations and missed deadlines.
 
 **Below that** — `PlantInterface`, one abstraction with two backends. MuJoCo
 writes torque straight to `d->ctrl`. On hardware the STS3215 has no closed-loop
@@ -109,10 +112,10 @@ to any vendor's internal controller.
 ### What the RT measurement shows
 
 The loaded RT bench measures 6.18 µs p99 and 11.34 µs p99.9 wakeup latency on a
-5000 µs period. At p99.9, the combined serial transaction is **~168× longer than
-the scheduler latency.** Measuring both locates the
-bottleneck: not the CPU, and so a 1 kHz loop on this arm is a bus-protocol
-problem (per-servo Return Delay Time) rather than a kernel one.
+5000 µs period. At p99.9, the combined serial transaction (2.14 ms) is **~189×
+longer than the scheduler latency.** Measuring both locates the bottleneck: not
+the CPU. Today's 2.14 ms round-trip does not fit a 1 kHz (1 ms) loop; whether
+cutting per-servo Return Delay Time would is untested.
 
 Regenerate the figure with `python3 tools/plot_architecture.py`.
 
@@ -122,9 +125,10 @@ Regenerate the figure with `python3 tools/plot_architecture.py`.
 
 ### Simulation — MuJoCo SO-101, 200 Hz, 1.0 s minimum-jerk reference
 
-Settled window `t ≥ 1.5 s`; arm RMS is the mean over the five arm joints
-(gripper excluded). Actuator limits are the real STS3215 envelope (±2.94 N·m),
-not widened to make a controller work.
+Settled window `t ≥ 1.5 s`; arm RMS is the **arithmetic mean** of the five
+per-joint settled RMS values (gripper excluded). Hardware below uses a different
+aggregator — see that section. Actuator limits are the real STS3215 envelope
+(±2.94 N·m), not widened to make a controller work.
 
 | # | Payload | Controller | Model knows payload? | Settled arm RMS [rad] | EE miss [m] | Peak τ [N·m] |
 |---|---|---|---|---|---|---|
@@ -211,14 +215,24 @@ most likely to put 1 kHz in reach.
 
 All hardware tracking numbers below come from a single campaign at **two
 payloads, 90 g and 180 g**, with five controllers run at each. Every run uses the
-same `kTarget`, the same 1.0 s minimum-jerk reference, a 4.0 s log at 200 Hz and
-the same grasp. Offsets are signed `target − q` at `t = 4.0 s`; RMS is over the
-settled window `t ≥ 1.5 s` and excludes wrist-roll.
+same target `q = (0.6, 0.7, −0.8, 0.5, 0.4, 0)`, the same 1.0 s minimum-jerk
+reference, a 4.0 s log at 200 Hz and the same grasp. Offsets are signed
+`target − q` at `t = 4.0 s`. **Arm RMS excluding wrist-roll** is the RMS of the
+four per-joint settled RMS values (the pooled RMS of those joints' errors over
+`t ≥ 1.5 s`). That is not the simulation aggregator, which is the arithmetic
+mean of five per-joint RMS values including wrist-roll.
 
 These campaign logs predate `SCHED_FIFO`/`mlockall` integration in
 `hardware_run`; they establish tracking behavior, not RT execution. Current logs
 record `rt_fifo`, `rt_mlockall` and deadline health in their CSV header. A
 replacement campaign must rerun all five controllers at both masses.
+
+Hardware uses the same PD and computed-torque classes as simulation. The
+gains are not the same (`Kp = (8, 12, 2, 8, 8, 0)` and acceleration-domain
+`Kp = 40`, against sim `Kp = (40, 40, 25, …)` and `Kp = 400`), and on the
+arm those torques are a position overlay on the STS3215's inner PD. The
+−65% / −50% below is still PD vs computed torque, on that plant — not a
+matched-gain repeat of the sim −87% experiment.
 
 Wrist-roll is excluded because it holds a constant ~0.027 rad (≈18 encoder LSB)
 that no controller moves — `g_roll ≈ 0`, so no gravity overlay reaches it, and
@@ -308,13 +322,13 @@ plant. In the current hardware implementation it fails for four coupled reasons:
    systematically rather than averaging out (errors-in-variables).
 3. **Fake inertia swamps gravity.** Pinocchio armature 0.028 × 61.4 = 1.72 N·m per
    LSB — already 2.1× the empty lift gravity torque, with the wrong sign, 799 times.
-4. **Friction floor scaled ~18×** versus simulation, from the unmodelled 345:1
-   gearbox.
-
-The observed failure is not always the same shape — an earlier campaign drove the
-estimate negative, while this one leaves it near zero. The unfiltered regressor
-used here does not retain enough payload information at this encoder resolution;
-this does not rule out a differently filtered estimator or observer.
+4. **Friction floor scaled ~18×** versus simulation on an earlier 151 g run
+   (`raw_mass = −0.175 kg` vs sim `−0.0096 kg`), consistent with an unmodelled
+   datasheet 345:1 gearbox. The final campaign's motion estimates are small and
+   positive instead — the failure shape is not unique. The unfiltered regressor
+   used here does not retain enough payload information at this encoder
+   resolution; this does not rule out a differently filtered estimator or
+   observer.
 
 Causes 2–3 vanish at rest. Cause 1 does not. Hence the pivot: identify the mass
 **statically** from `Present_Current` (register 69) with a ±0.07 rad two-way
@@ -334,9 +348,14 @@ against separate, protocol-matched runs using the raw estimate.
 
 ## What this does not claim
 
+- **The hardware PD vs computed-torque comparison is not a matched-gain
+  repeat of the sim one.** Same controller classes, different gains, and on
+  hardware a position overlay on the servo's inner PD. The −65% / −50% is
+  still that comparison on the arm; it is not the sim −87% experiment.
 - **Only the elbow's `K_servo` is identified** (≈ 11 N·m/rad, from `g(q)`/droop on
-  a settled stream). The other five — `(50, 90, 11, 50, 50, 50)` — are frozen
-  placeholders, including wrist-flex, which carries real gravity torque. Elbow
+  a settled stream). The map is `(50, 90, 11, 50, 50, 50)`; the other five
+  entries are frozen placeholders, including wrist-flex, which carries real
+  gravity torque. Elbow
   ≈ 11 against lift 90 on nominally identical servos is physically odd and
   unexplained. So the closed-loop result is an elbow result: lift regresses in
   both calibrated runs, and only the elbow's error-versus-mass slope is
@@ -371,7 +390,12 @@ Remaining bench work is listed at the end of [RESULTS.md](RESULTS.md).
 
 Everything runs in one Docker image (ROS 2 Jazzy + Eigen + Pinocchio + the MuJoCo
 C library). On bare-metal Linux, Docker is namespacing over the host kernel, so
-`SCHED_FIFO` and `mlockall` still work against `PREEMPT_RT`.
+`SCHED_FIFO` and `mlockall` still work against `PREEMPT_RT` when the container
+is given `CAP_SYS_NICE` and the memlock/rtprio ulimits.
+
+The image defaults to `MUJOCO_ARCH=aarch64` (Apple Silicon). On the x86_64 i7
+RT box, use `docker/run_i7.sh`, which rebuilds with `x86_64`. `build_and_validate.sh`
+does not pass that build-arg.
 
 ```bash
 # Simulation: build the image, then build + gate + benchmark end to end.
@@ -383,12 +407,19 @@ python3 run_baseline_so101.py --csv oracle_baseline_so101.csv
 `build_and_validate.sh` runs, in order: the rigid-body equivalence gates, the C++
 vs Python PD regression, the computed-torque matrix and its acceptance checks, and
 the deterministic RLS validator plus the unknown-payload matrix. Any gate failing
-stops the run.
+stops the run. The workspace install lands on the bind-mounted repo; the
+container itself exits.
 
 ```bash
 # ROS 2 node (simulation), publishing /joint_states and /arm_metrics.
-# SCHED_FIFO needs CAP_SYS_NICE.
-ros2 launch arm_bringup arm_control.launch.py
+# Launch from a container — Ubuntu 26.04 has no libpinocchio-dev.
+docker run --rm -it -v "$PWD":/work -w /work \
+  --cap-add=SYS_NICE --ulimit rtprio=99 --ulimit memlock=-1 \
+  so101-dev:jazzy
+# then, inside:
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+ros2 launch arm_bringup arm_control.launch.py   # SCHED_FIFO needs CAP_SYS_NICE
 
 # Hardware, on the RT box with the arm on /dev/ttyACM0:
 ./docker/run_i7.sh
@@ -436,6 +467,7 @@ ros2_ws/src/
     src/
       arm_control_node.cpp    ROS 2 wrapper; control thread never touches rclcpp
       hardware_run.cpp        hardware tracking, in-run mass ID, logging
+      gravity_id.cpp          static Present_Current mass ID
       validate_dynamics.cpp   blocking rigid-body equivalence gate
       validate_payload_estimator.cpp   deterministic RLS validator
       rt_jitter_bench.cpp     wakeup-jitter measurement
@@ -446,7 +478,7 @@ ros2_ws/src/
 
 models/so101/           MuJoCo Menagerie SO-101 (Apache-2.0) + torque variants
 docs/data/              hardware CSV logs cited by RESULTS.md
-docs/figures/           figures, with the scripts that regenerate them
+docs/figures/           figures (regenerate with tools/plot_*.py)
 tools/                  benchmark and plotting scripts (Python)
 docker/                 image + end-to-end validation script
 RESULTS.md              canonical numbers -- the source of truth
