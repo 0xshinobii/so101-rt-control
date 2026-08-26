@@ -1,0 +1,11 @@
+gripper hold q=-0.241 rad  tick=1758  torque_limit=200 (min_ticks)
+hardware  controller=adaptive_computed_torque  payload=90 g (physical)  K=(50,90,11,50,50,50)
+hold 90 g in the jaws — squeeze, home, then 4 s min-jerk
+static-gravity  kt=-12.522 N.m/A  1-pose two-way ID this run, then freeze
+mass calibration  physical=(raw-0.00000)/1.00000, then clamp [0,0.5]
+home q=(0.006,0.086,0.005,0.026,0.031,-0.172)
+1-pose static ID (two-way current at kTarget) — ~8 s
+id  q=(0.594,0.749,-0.787,0.502,0.367)  tau=(-1.757,-0.736,-0.122)  m=0.1813 kg
+this-run LS raw_mass=0.1813 kg  calibrated=0.1813 kg  (frozen)
+wrote /work/final_campaign/final_hw_090g_03_adapt_raw_static.csv  final q=(0.595,0.701,-0.824,0.492,0.370,-0.172) ee=(0.3805,-0.2272,0.1594)
+RLS raw_mass=0.1813 kg  compensated=0.1813 kg  updates=0

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -147,6 +148,7 @@ int main(int argc, char** argv) {
   double mass_cal_offset = 0.0;
   bool have_kt = false;
   bool have_mass = false;
+  bool motion_rls = false;
   double freeze_mass = 0.0;
   for (int i = 1; i < argc; ++i) {
     const std::string opt = argv[i];
@@ -184,6 +186,8 @@ int main(int argc, char** argv) {
       mass_cal_scale = std::stod(need());
     } else if (opt == "--mass-cal-offset") {
       mass_cal_offset = std::stod(need());
+    } else if (opt == "--motion-rls") {
+      motion_rls = true;
     } else if (opt == "--mass") {
       freeze_mass = std::stod(need());
       have_mass = true;
@@ -196,12 +200,25 @@ int main(int argc, char** argv) {
                    "[--gripper-torque 1-1000] "
                    "[--kt N.m/A] [--mass KG] [--lambda L] "
                    "[--mass-cal-scale S] [--mass-cal-offset KG] "
+                   "[--motion-rls] "
                    "[--csv FILE]\n");
       return 2;
     }
   }
 
   try {
+    if (motion_rls && controller_name != "adaptive_computed_torque") {
+      throw std::invalid_argument("--motion-rls requires adaptive controller");
+    }
+    if (motion_rls && have_mass) {
+      throw std::invalid_argument("--motion-rls cannot be combined with --mass");
+    }
+    if (motion_rls &&
+        (mass_cal_scale != 1.0 || mass_cal_offset != 0.0)) {
+      throw std::invalid_argument(
+          "--motion-rls must use identity mass calibration");
+    }
+
     HardwareBackend plant(cfg);
     std::unique_ptr<Controller> controller;
     AdaptiveComputedTorqueController* adaptive = nullptr;
@@ -218,10 +235,10 @@ int main(int argc, char** argv) {
       auto instance = std::make_unique<AdaptiveComputedTorqueController>(
           cfg.urdf_path, payload_urdf, reference_payload_mass, kComputedKp,
           kComputedKd, plant.timestep(), est);
-      instance->set_use_acceleration_rls(false);
+      instance->set_use_acceleration_rls(motion_rls);
       adaptive = instance.get();
       controller = std::move(instance);
-      if (!have_kt) {
+      if (!motion_rls && !have_kt) {
         std::fprintf(stderr,
                      "warning: adaptive using default kt=1.0; run gravity_id "
                      "--empty and pass --kt\n");
@@ -233,11 +250,14 @@ int main(int argc, char** argv) {
     std::printf(
         "hardware  controller=%s  payload=%.0f g (physical)  "
         "K=(%.0f,%.0f,%.0f,%.0f,%.0f,%.0f)\n"
-        "hold %.0f g in the jaws — squeeze, home, 1-pose ID, then 4 s min-jerk\n",
+        "hold %.0f g in the jaws — squeeze, home, then 4 s min-jerk\n",
         controller_name.c_str(), payload_g, kKservo[0], kKservo[1], kKservo[2],
         kKservo[3], kKservo[4], kKservo[5], payload_g);
     if (adaptive) {
-      if (have_mass) {
+      if (motion_rls) {
+        std::printf(
+            "motion RLS  qdd from encoder ticks, no pre-run static ID\n");
+      } else if (have_mass) {
         std::printf("static-gravity  kt=%.3f N.m/A  freeze m=%.4f kg from gravity_id\n",
                     cfg.kt_nm_per_a[1], freeze_mass);
       } else {
@@ -254,11 +274,15 @@ int main(int argc, char** argv) {
     const double dt = plant.timestep();
     const int steps = static_cast<int>(kDuration / dt);
     std::vector<Sample> log(steps);
+    std::vector<double> compensated_mass_log(
+        steps, std::numeric_limits<double>::quiet_NaN());
     Eigen::VectorXd q(kDof), qdot(kDof), tau(kDof), q_goal(kDof);
     Eigen::VectorXd q_ref(kDof), qdot_ref(kDof), qddot_ref(kDof);
-    Eigen::VectorXd amps(kDof), tau_meas(kDof);
 
-    if (adaptive && have_mass) {
+    if (adaptive && motion_rls) {
+      std::printf("motion RLS starts at m=%.4f kg and updates during tracking\n",
+                  adaptive->estimated_payload_mass());
+    } else if (adaptive && have_mass) {
       adaptive->set_payload_mass(freeze_mass);
       std::printf("frozen mass=%.4f kg  compensated=%.4f kg\n",
                   adaptive->estimated_payload_mass(),
@@ -293,24 +317,36 @@ int main(int argc, char** argv) {
       s.ee[1] = ee.y();
       s.ee[2] = ee.z();
       s.estimated_payload_mass = controller->estimated_payload_mass();
+      if (adaptive) {
+        compensated_mass_log[i] = adaptive->compensated_payload_mass();
+      }
     }
 
     std::ofstream out(csv_path);
     out.precision(17);
     out << "# plant=hardware controller=" << controller_name
-        << " payload_g=" << payload_g << "\n";
+        << " payload_g=" << payload_g;
+    if (adaptive) {
+      out << " estimator=" << (motion_rls ? "motion_rls" : "static_id")
+          << " mass_cal_scale=" << mass_cal_scale
+          << " mass_cal_offset=" << mass_cal_offset;
+    }
+    out << "\n";
     out << "t";
     for (int i = 0; i < kDof; ++i) out << ",q" << i;
     for (int i = 0; i < kDof; ++i) out << ",qd" << i;
     for (int i = 0; i < kDof; ++i) out << ",tau" << i;
-    out << ",ee_x,ee_y,ee_z,estimated_payload_mass\n";
-    for (const auto& s : log) {
+    out << ",ee_x,ee_y,ee_z,estimated_payload_mass,"
+           "compensated_payload_mass\n";
+    for (int sample_index = 0; sample_index < steps; ++sample_index) {
+      const auto& s = log[sample_index];
       out << s.t;
       for (int i = 0; i < kDof; ++i) out << ',' << s.q[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.qd[i];
       for (int i = 0; i < kDof; ++i) out << ',' << s.tau[i];
       out << ',' << s.ee[0] << ',' << s.ee[1] << ',' << s.ee[2] << ','
-          << s.estimated_payload_mass << '\n';
+          << s.estimated_payload_mass << ','
+          << compensated_mass_log[sample_index] << '\n';
     }
     const Sample& last = log.back();
     std::printf(

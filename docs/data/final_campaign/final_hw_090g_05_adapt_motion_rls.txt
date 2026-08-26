@@ -1,0 +1,8 @@
+gripper hold q=-0.241 rad  tick=1758  torque_limit=200 (min_ticks)
+hardware  controller=adaptive_computed_torque  payload=90 g (physical)  K=(50,90,11,50,50,50)
+hold 90 g in the jaws — squeeze, home, then 4 s min-jerk
+motion RLS  qdd from encoder ticks, no pre-run static ID
+home q=(0.006,0.086,0.005,0.029,0.031,-0.172)
+motion RLS starts at m=0.0000 kg and updates during tracking
+wrote /work/final_campaign/final_hw_090g_05_adapt_motion_rls.csv  final q=(0.594,0.709,-0.784,0.495,0.370,-0.172) ee=(0.3798,-0.2260,0.1446)
+RLS raw_mass=0.0008 kg  compensated=0.0008 kg  updates=799

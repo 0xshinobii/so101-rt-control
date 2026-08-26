@@ -5,12 +5,12 @@ gap; on the STS3215 bus the same `q̈` identity is false (`raw_mass = −0.175 k
 Hardware path is rest-current ID, calibrate, freeze, track. The four-mass
 campaign gives a **2.31× raw instrument scale**; the affine correction now runs
 inside the controller, ahead of the `[0, 0.5] kg` projection. Closed loop, that
-moves final elbow offset **+0.0283 → +0.0084 rad** at 90 g and
-**+0.0443 → +0.0145 rad** at 180 g, and settled arm RMS excluding wrist-roll
-**0.0149 → 0.0057** and **0.0232 → 0.0110** — with lift regressing in both, on
-placeholder `K_servo`. Corrected mass lands **−4.1 g** at 90 g and **−3.0 g** at
-180 g, but run-to-run spread (**4.9 g** at 90 g, **14.6 g** across three readings
-near 181 g) exceeds those errors and is the bound; every mass run so far is a
+moves final elbow offset **+0.0237 → +0.0053 rad** at 90 g and
+**+0.0406 → +0.0069 rad** at 180 g, and settled arm RMS excluding wrist-roll
+**0.0127 → 0.0064** and **0.0215 → 0.0097** — with lift regressing in both, on
+placeholder `K_servo`. Corrected mass lands **−7.2 g** at 90 g and **−4.0 g** at
+180 g, but run-to-run spread (**7.8 g** at 90 g, **14.6 g** at 180 g)
+exceeds those errors and is the bound; every mass run so far is a
 fitted mass, so interpolation is untested. Tracking-null on 70 g straddles truth:
 elbow **0.058 kg**, lift **~0.155 kg** (0.070 physical); elbow is the one joint
 with identified `K_servo`.
@@ -174,6 +174,15 @@ automated gate is frozen at 0.0035 kg, approximately 30% margin, rather than
 being chosen before measurement. `tools/phase5_bench.py` also retains 50% gap
 recovery only as a bug-detection floor; the measured recovery above is the
 reported result.
+
+## Phase 6 — Momentum DOB (sim only, incomplete)
+
+The archived sweep (`phase6_frequency_response.csv`) gives DOB / baseline RMS
+ratios **0.108 / 0.400 / 0.448** at **0.5 / 2 / 12 Hz**. These do not trace a
+first-order rolloff at the configured `dob_bandwidth_hz = 8.0`: 2 Hz is worse
+and 12 Hz better than that corner predicts, and the discrepancy is unresolved.
+Phase 6 was never integrated into the retained benchmark suite and never
+reached hardware. It is a deliberate scope cut.
 
 ## Phase 3 — PREEMPT_RT wakeup jitter
 
@@ -448,7 +457,7 @@ Empty should be 0. **0.031 kg** is the floor at this pose (URDF vs
 Incremental **0.098 kg** vs 0.070 is **+40%**. Same ~1.8× absolute scale as
 the hanging-cup 6-pose LS before empty subtraction. This earlier two-point
 scale (~1.4× incremental) is superseded by the four-mass fit below. Using
-half the later 181 g repeat spread as a rough per-point variation gives about
+half the later 180 g repeat spread as a rough per-point variation gives about
 ±0.34 uncertainty on a slope measured over only 70 g; it was never an
 independent competing calibration.
 
@@ -507,51 +516,52 @@ joint. Numbers are from `docs/data/hw_ct_70.csv` /
 ### Affine current-ID calibration
 
 One 1-pose two-way run at `kTarget` (same ±0.07 approach protocol) at each of
-0, 90, 181, and 273 g (20% pinch) gives:
+0, 90, 180, and 273 g (20% pinch) gives:
 
 | true [kg] | raw ID [kg] | affine-corrected [kg] | corrected error [g] |
 |-----------|-------------|-----------------------|---------------------|
-| 0.000 | −0.00868 | 0.00164 | +1.64 |
-| 0.090 | 0.19758 | 0.09085 | +0.85 |
-| 0.181 | 0.39084 | 0.17443 | −6.57 |
-| 0.273 | 0.62816 | 0.27707 | +4.07 |
+| 0.000 | −0.00868 | 0.00156 | +1.56 |
+| 0.090 | 0.19758 | 0.09065 | +0.65 |
+| 0.180 | 0.39084 | 0.17414 | −5.86 |
+| 0.273 | 0.62816 | 0.27665 | +3.65 |
 
 Least squares:
 
-`m_raw = 2.31217 · m_true − 0.01248 kg`
+`m_raw = 2.31501 · m_true − 0.01229 kg`
 
 so the calibrated estimate is
 
-`m_cal = (m_raw + 0.01248 kg) / 2.31217`.
+`m_cal = (m_raw + 0.01229 kg) / 2.31501`.
 
-The in-sample corrected RMSE is **3.97 g**, but that divides residual SSE by
+The in-sample corrected RMSE is **3.56 g**, but that divides residual SSE by
 all four fitted points. With `n = 4`, `p = 2`, the residual standard error is
-**5.62 g** (`sqrt(SSE / (n − p))`); maximum fit residual is **6.57 g**.
+**5.03 g** (`sqrt(SSE / (n − p))`); maximum fit residual is **5.86 g**.
 `R² = 0.99848` is expected for a roughly linear signal over 0–273 g and is
 less informative than residuals and repeatability.
 
-An independent repeat at 181 g (not refit) returned raw **0.4246 kg**:
-the affine map gives **0.1890 kg**, an **+8.0 g validation error**. The two
-181 g raw estimates differ by 0.0338 kg, equivalent to **14.6 g** after
-calibration. This is **repeat-run validation at a fitted mass**, not
-generalization to an unseen mass: +8.0 g is about half the 14.6 g spread and
-is consistent with run noise. A true held-out interpolation test needs a fifth
-mass not used in the fit (roughly 130 g would sit between fitted points). The
-defensible headline is therefore **4.4% repeat-run error with an 8.1% two-run
-spread**, not the 3.97 g in-sample RMSE. This is a single-digit-percent result;
-labeling it “research-grade” would require a cited, protocol-matched external
-benchmark.
+An independent repeat at 180 g (not refit) returned raw **0.4246 kg**:
+the affine map gives **0.18872 kg**, an **+8.72 g validation error**. Across
+five 180 g static-ID runs, raw ID spans 0.39084–0.42460 kg; after calibration that is
+0.17414–0.18872 kg, a **14.6 g** spread. This is **repeat-run validation at a
+fitted mass**, not generalization to an unseen mass: +8.72 g is of the same
+order as the repeat spread and is consistent with run noise. A true held-out
+interpolation test needs a fifth mass not used in the fit (roughly 130 g would
+sit between fitted points). The defensible headline is therefore **4.8%
+repeat-run error with an 8.1% three-run spread**, not the 3.56 g in-sample
+RMSE. This is a single-digit-percent result; labeling it “research-grade”
+would require a cited, protocol-matched external benchmark.
 
 A second repeat at 90 g exercised the affine map **inside the controller,
-before `[0, 0.5]` projection**. Raw **0.18624 kg** became **0.08595 kg**:
-**−4.05 g (−4.5%)**. The two corrected 90 g readings differ by **4.90 g**.
-Using corrected 0.08595 kg instead of raw 0.19758 kg reduced final elbow
+before `[0, 0.5]` projection**. Raw **0.18624 kg** became **0.08576 kg**:
+**−4.24 g (−4.7%)**. Including the final campaign's 0.08364 and 0.08283 kg
+equivalents, four corrected 90 g readings span **7.82 g**.
+Using corrected 0.08576 kg instead of raw 0.19758 kg reduced final elbow
 offset from **+0.0283 rad to +0.0084 rad** (70%); lift moved from −0.0010 to
 −0.0041 rad, but its `K_servo = 90` remains a placeholder.
 
 A calibrated 180 g run returned raw **0.39672 kg** and compensated
-**0.17697 kg**: **−3.03 g (−1.7%)**. Relative to the first uncalibrated
-181 g run, final elbow offset fell from **+0.0443 rad to +0.0145 rad**
+**0.17667 kg**: **−3.33 g (−1.8%)**. Relative to the first uncalibrated
+180 g run, final elbow offset fell from **+0.0443 rad to +0.0145 rad**
 (67%); lift changed from −0.0061 to −0.0148 rad, again on placeholder
 `K_servo`.
 
@@ -567,9 +577,9 @@ internal weight.
 The 273 g raw estimate exceeded the controller’s 0.5 kg compensation clamp;
 the unclamped **0.62816 kg diagnostic** is what enters the fit. On the old
 uncalibrated path, raw 0.5 kg corresponded through the affine map to
-**0.222 kg true mass**. The calibrated runtime now applies the affine
+**0.221 kg true mass**. The calibrated runtime now applies the affine
 correction before the physical `[0, 0.5] kg` clamp, removing that artificial
-~222 g limit for this calibrated stacking geometry.
+~221 g limit for this calibrated stacking geometry.
 
 The prior 70 g campaign’s ~1.4× incremental scale and this campaign’s 2.31×
 scale used the same `kTarget` protocol but different sessions and stacking
@@ -580,15 +590,47 @@ the geometry collinearity prevents attributing the change to `k_t` alone.
 Logs: `docs/data/hw_id_000.csv`, `docs/data/hw_id_090.csv`,
 `docs/data/hw_id_0181.csv`, `docs/data/hw_id_0181_repeat.csv`,
 `docs/data/hw_id_0273.csv`, `docs/data/hw_affine_090.csv`,
-`docs/data/hw_affine_0180.csv`.
+`docs/data/hw_affine_0180.csv`. The two `0181` filenames retain the original
+mistyped label; their physical mass was 180 g.
+
+### Final matched 90 / 180 g campaign
+
+Each weight stayed in the same grasp for five runs: PD, empty-model computed
+torque, raw static ID, affine-corrected static ID, and the original in-motion
+`q̈` RLS. Same `kTarget`, 1.0 s minimum-jerk, 4.0 s log and 20% pinch.
+Offsets are final `target − q`; RMS is over `t ≥ 1.5 s`, four joints excluding
+wrist-roll.
+
+| mass | controller | mass used [kg] | lift offset [rad] | elbow offset [rad] | RMS no roll [rad] | EE z [m] |
+|------|------------|---------------:|------------------:|-------------------:|------------------:|---------:|
+| 90 g | PD | — | −0.0133 | −0.0514 | 0.0268 | 0.132 |
+| 90 g | CT empty | 0 | −0.0087 | −0.0146 | 0.0093 | 0.145 |
+| 90 g | static raw | 0.1813 | −0.0010 | +0.0237 | 0.0127 | 0.159 |
+| 90 g | **static affine** | **0.0828** | −0.0041 | **+0.0053** | **0.0064** | 0.153 |
+| 90 g | motion RLS | 0.0008 | −0.0087 | −0.0161 | 0.0100 | 0.145 |
+| 180 g | PD | — | −0.0240 | −0.0668 | 0.0356 | 0.124 |
+| 180 g | CT empty | 0 | −0.0179 | −0.0299 | 0.0177 | 0.137 |
+| 180 g | static raw | 0.4002 | −0.0072 | +0.0406 | 0.0215 | 0.162 |
+| 180 g | **static affine** | **0.1760** | −0.0164 | **+0.0069** | **0.0097** | 0.148 |
+| 180 g | motion RLS | 0.0094 | −0.0179 | −0.0299 | 0.0178 | 0.137 |
+
+Affine correction vs raw static ID reduces elbow offset **78% / 83%** and
+RMS excluding roll **49% / 55%** at 90 / 180 g. It beats empty-model CT RMS
+by **31% / 45%**. Motion RLS estimates almost zero and reproduces CT-empty,
+confirming on both campaign masses that the simulation estimator does not
+transfer to the position-servo hardware.
+
+Logs: `docs/data/final_campaign/`.
+Recompute this table with `python3 tools/final_campaign_metrics.py`.
 
 **Status.** Sim Phases 4–5 and the hardware plant (bridge, `K_servo`,
 Present_Current `k_t`, rest-ID then freeze) are done. Hardware does **not**
-recover Phase 5 online `q̈` RLS; mass during motion stays frozen. Current-ID
+recover Phase 5 online `q̈` RLS: final motion estimates are 0.0008 / 0.0094 kg
+at 90 / 180 g and track like CT-empty. Current-ID
 raw scale is ~2.31× in this four-mass stacking geometry; affine correction
-gives repeat-run errors **−4.1 g at 90 g**, **−3.0 g at 180 g**, and
-**+8.0 g at 181 g**. Applying it before the clamp reduced elbow offset by
-70% at 90 g and 67% at 180 g; unseen-mass interpolation is not yet tested.
+gives final-campaign errors **−7.2 g at 90 g** and **−4.0 g at 180 g**.
+Applying it before the clamp reduced elbow offset by 78% / 83% and no-roll
+RMS by 49% / 55%; unseen-mass interpolation is not yet tested.
 Elbow tracking-null on 70 g is 0.058 kg; lift says ~0.155 kg. Highest-value
 remaining hardware is the **locked-rotor** check (reg 69 vs ammeter + stall
 current), followed by fixed-geometry repeatability. Variable load in one
