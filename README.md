@@ -42,15 +42,42 @@ excluding wrist-roll by **49–55%** versus the same static ID without calibrati
 
 ## Headline results
 
-| | Result |
-|---|---|
-| **Computed torque vs naive PD** (sim, 0.20 kg known payload) | settled arm RMS **0.0216 → 0.0028 rad (−86.9%)**; end-effector miss **0.0300 → 0.00018 m (−99.4%)** |
-| **Online payload RLS** (sim, 0.20 kg unknown) | recovers **102.4%** of the steady-state RMS gap and **97.8%** of the Cartesian gap toward the perfect-model bound; mass error **2.3 g** |
-| **Computed torque vs PD** (hardware, 90 / 180 g) | arm RMS excluding wrist-roll **0.0268 → 0.0093** and **0.0356 → 0.0177 rad** (**−65% / −50%**) |
-| **Payload compensation** (hardware, calibrated static ID vs raw static ID) | elbow offset **0.0237 → 0.0053 rad (−78%)** at 90 g and **0.0406 → 0.0069 rad (−83%)** at 180 g; arm RMS excluding wrist-roll **−49% / −55%** |
-| **Payload identification** (hardware, static current ID + affine correction) | final campaign mass error **−7.2 g** at 90 g and **−4.0 g** at 180 g; observed repeat spread **7.8 g / 14.6 g** |
-| **RT wakeup jitter** (PREEMPT_RT, i7-7700, under `stress-ng`) | p99 **6.18 µs** (**0.12%**), p99.9 **11.34 µs** (**0.23%**) of a 5000 µs period |
-| **Serial bus round-trip** (200 Hz, 2000 loops, zero loss) | `sync_read` p99.9 **1.95 ms** + `sync_write` **0.19 ms** = **43%** of the period |
+One comparison per row. Each states the controller it is measured against, so
+no figure floats against an unnamed baseline.
+
+| # | Setting | Baseline → result | settled arm RMS [rad] | payload mass estimate |
+|---|---|---|---|---|
+| 1 | **sim**, 0.20 kg, known to the model | naive PD → computed torque | `0.0216` → `0.0028` (**−86.9%**) | not estimated — given to the model |
+| 2 | **sim**, 0.20 kg, unknown | CT with empty model → CT + online RLS | `0.0154` → `0.0025` (**−83.4%**) | `0.2023` kg (**+2.3 g**) |
+| 3 | **hardware**, 90 g | naive PD → CT with empty model | `0.0268` → `0.0093` (**−65%**) | not estimated — model stays empty |
+| 4 | **hardware**, 180 g | naive PD → CT with empty model | `0.0356` → `0.0177` (**−50%**) | not estimated — model stays empty |
+| 5 | **hardware**, 90 g | CT with empty model → CT + calibrated static ID | `0.0093` → `0.0064` (**−31%**) | none → `0.0828` kg (**−7.2 g**) |
+| 6 | **hardware**, 180 g | CT with empty model → CT + calibrated static ID | `0.0177` → `0.0097` (**−45%**) | none → `0.1760` kg (**−4.0 g**) |
+
+Row 2 is the sim result stated as a recovery: RLS closes **102.4%** of the RMS
+gap between the empty-model controller and the perfect-model bound (`0.0028`).
+End-effector miss follows the same pattern in simulation — `0.0300` → `0.00018` m
+on row 1, `0.0209` → `0.00065` m on row 2 — and is tabulated in full below.
+Hardware has no Cartesian equivalent: `kTarget` is a joint-space goal.
+
+Rows 3–6 chain: PD → computed torque with an empty model → computed torque with
+an identified payload. Rows 5–6 are the headline hardware result, measured
+against the best controller that does *not* estimate the payload.
+
+Calibration is what makes the estimate usable, not merely better. The same
+static ID left uncalibrated reads `0.1813` kg at 90 g — a 91 g over-estimate —
+and tracks at `0.0127` rad, **worse than not compensating at all** (row 3's
+`0.0093`). Feeding a biased mass into an otherwise correct model actively hurts;
+the affine correction is what turns it into row 5.
+
+Aggregators differ between the two plants and are stated in each section: sim is
+the arithmetic mean of five per-joint settled RMS values including wrist-roll,
+hardware is the pooled RMS of the four joints excluding it. Sim and hardware rows
+are therefore comparable only within a plant, not across.
+
+**Real-time and bus** (separate benches, not tracking runs): loaded wakeup jitter
+p99 **6.18 µs**, p99.9 **11.34 µs** on a 5000 µs period; serial round-trip
+**~2.14 ms**, ~189× the scheduler latency, 38–43% of the period.
 
 Every number above is measured on this repo's code. Full derivation, discarded
 runs, and caveats are in **[RESULTS.md](RESULTS.md)**, which is the source of
