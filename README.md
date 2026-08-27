@@ -11,21 +11,24 @@ with online payload estimation) never learn which side of the plant boundary
 they are on.
 
 The current runners request `SCHED_FIFO` and `mlockall` and drive the loop at
-200 Hz. The hardware tracking campaign below predates that integration — it
-measures tracking, not real-time execution.
+200 Hz, including `hardware_run`.
 
-The sim-to-real gap is the substance of the project. Online payload RLS recovers
-**102.4% of the empty-model-to-perfect-model computed-torque RMS gap in
-simulation**. On hardware the same estimator returns **0.8 g of a 90 g payload
-and 9.4 g of a 180 g one** (799 updates) and tracks like the empty model. The
-failure comes from coupled measurement and actuator-model mismatches that
-controller-gain tuning alone does not fix. The hardware path is therefore a
-different estimator: identify the mass statically from motor current at rest,
-calibrate the instrument, freeze it, then track. Applying that correction inside
-the controller cuts the elbow's steady-state offset by **78–83%** and the arm RMS
-excluding wrist-roll by **49–55%** versus the same static ID without calibration.
+The sim-to-real gap is the substance of the project. Online payload RLS closes
+the empty-model-to-perfect-model computed-torque RMS gap in simulation
+(measured **102.4%**: RLS RMS `0.002545` vs known-mass `0.002840`; the
+overshoot is leftover friction deadband, not a better model). On hardware the
+same estimator returns **0.8 g of a 90 g payload and 9.4 g of a 180 g one**
+(799 updates) and tracks like the empty model. The failure comes from coupled
+measurement and actuator-model mismatches that controller-gain tuning alone
+does not fix. The hardware path is therefore a different estimator: identify
+the mass statically from motor current at rest, calibrate the instrument,
+freeze it, then track. Applying that correction inside the controller cuts the
+elbow's steady-state offset by **78–83%** and the arm RMS excluding wrist-roll
+by **49–55%** versus the same static ID without calibration.
 
 ---
+
+
 
 ## Contents
 
@@ -40,19 +43,22 @@ excluding wrist-roll by **49–55%** versus the same static ID without calibrati
 
 ---
 
+
+
 ## Headline results
 
-One comparison per row. Each states the controller it is measured against, so
-no figure floats against an unnamed baseline.
+One comparison per row. Each states the controller it is measured against.
 
-| # | Setting | Baseline → result | settled arm RMS [rad] | payload mass estimate |
-|---|---|---|---|---|
-| 1 | **sim**, 0.20 kg, known to the model | naive PD → computed torque | `0.0216` → `0.0028` (**−86.9%**) | not estimated — given to the model |
-| 2 | **sim**, 0.20 kg, unknown | CT with empty model → CT + online RLS | `0.0154` → `0.0025` (**−83.4%**) | `0.2023` kg (**+2.3 g**) |
-| 3 | **hardware**, 90 g | naive PD → CT with empty model | `0.0268` → `0.0093` (**−65%**) | not estimated — model stays empty |
-| 4 | **hardware**, 180 g | naive PD → CT with empty model | `0.0356` → `0.0177` (**−50%**) | not estimated — model stays empty |
-| 5 | **hardware**, 90 g | CT with empty model → CT + calibrated static ID | `0.0093` → `0.0064` (**−31%**) | none → `0.0828` kg (**−7.2 g**) |
-| 6 | **hardware**, 180 g | CT with empty model → CT + calibrated static ID | `0.0177` → `0.0097` (**−45%**) | none → `0.1760` kg (**−4.0 g**) |
+
+| #   | Setting                              | Baseline → result                               | settled arm RMS [rad]            | payload mass estimate              |
+| --- | ------------------------------------ | ----------------------------------------------- | -------------------------------- | ---------------------------------- |
+| 1   | **sim**, 0.20 kg, known to the model | naive PD → computed torque                      | `0.0216` → `0.0028` (**−86.9%**) | not estimated — given to the model |
+| 2   | **sim**, 0.20 kg, unknown            | CT with empty model → CT + online RLS           | `0.0154` → `0.0025` (**−83.4%**) | `0.2023` kg (**+2.3 g**)           |
+| 3   | **hardware**, 90 g                   | naive PD → CT with empty model                  | `0.0268` → `0.0093` (**−65%**)   | not estimated — model stays empty  |
+| 4   | **hardware**, 180 g                  | naive PD → CT with empty model                  | `0.0356` → `0.0177` (**−50%**)   | not estimated — model stays empty  |
+| 5   | **hardware**, 90 g                   | CT with empty model → CT + calibrated static ID | `0.0093` → `0.0064` (**−31%**)   | none → `0.0828` kg (**−7.2 g**)    |
+| 6   | **hardware**, 180 g                  | CT with empty model → CT + calibrated static ID | `0.0177` → `0.0097` (**−45%**)   | none → `0.1760` kg (**−4.0 g**)    |
+
 
 Row 2 is the sim result stated as a recovery: RLS closes **102.4%** of the RMS
 gap between the empty-model controller and the perfect-model bound (`0.0028`).
@@ -85,9 +91,11 @@ truth — this README summarises it.
 
 ---
 
+
+
 ## Architecture and the real-time boundary
 
-![Architecture: where the real-time boundary lives](docs/figures/architecture.svg)
+Architecture: where the real-time boundary lives
 
 The figure shows the ROS 2 node. The hardware runner is a separate binary that
 shares everything below the red line — the same `ControlLoop`, controllers and
@@ -148,7 +156,11 @@ Regenerate the figure with `python3 tools/plot_architecture.py`.
 
 ---
 
+
+
 ## Full metrics table
+
+
 
 ### Simulation — MuJoCo SO-101, 200 Hz, 1.0 s minimum-jerk reference
 
@@ -157,27 +169,31 @@ per-joint settled RMS values (gripper excluded). Hardware below uses a different
 aggregator — see that section. Actuator limits are the real STS3215 envelope
 (±2.94 N·m), not widened to make a controller work.
 
-| # | Payload | Controller | Model knows payload? | Settled arm RMS [rad] | EE miss [m] | Peak τ [N·m] |
-|---|---|---|---|---|---|---|
-| 1 | empty | naive PD | — | `0.009959` | `0.014012` | — |
-| 2 | empty | computed torque | n/a | `0.002933` | `0.000327` | 1.360 |
-| 3 | 0.10 kg | computed torque | **no** | `0.008030` | `0.010438` | 1.640 |
-| 4 | 0.10 kg | CT + payload RLS | estimated | `0.002494` | `0.000877` | 1.637 |
-| 5 | 0.20 kg | naive PD | — | `0.021612` | `0.029999` | — |
-| 6 | 0.20 kg | computed torque | **no** | `0.015351` | `0.020944` | 1.917 |
-| 7 | 0.20 kg | CT + payload RLS | estimated | `0.002545` | `0.000646` | 1.919 |
-| 8 | 0.20 kg | computed torque | **yes** (upper bound) | `0.002840` | `0.000184` | 1.923 |
+
+| #   | Payload | Controller       | Model knows payload?  | Settled arm RMS [rad] | EE miss [m] | Peak τ [N·m] |
+| --- | ------- | ---------------- | --------------------- | --------------------- | ----------- | ------------ |
+| 1   | empty   | naive PD         | —                     | `0.009959`            | `0.014012`  | —            |
+| 2   | empty   | computed torque  | n/a                   | `0.002933`            | `0.000327`  | 1.360        |
+| 3   | 0.10 kg | computed torque  | **no**                | `0.008030`            | `0.010438`  | 1.640        |
+| 4   | 0.10 kg | CT + payload RLS | estimated             | `0.002494`            | `0.000877`  | 1.637        |
+| 5   | 0.20 kg | naive PD         | —                     | `0.021612`            | `0.029999`  | —            |
+| 6   | 0.20 kg | computed torque  | **no**                | `0.015351`            | `0.020944`  | 1.917        |
+| 7   | 0.20 kg | CT + payload RLS | estimated             | `0.002545`            | `0.000646`  | 1.919        |
+| 8   | 0.20 kg | computed torque  | **yes** (upper bound) | `0.002840`            | `0.000184`  | 1.923        |
+
 
 Deltas, each against a named reference row:
 
-| Comparison | Reference | Arm RMS | EE miss |
-|---|---|---|---|
-| Computed torque removes gravity droop, empty arm | 2 vs 1 | **−70.5%** | **−97.7%** |
-| Computed torque removes gravity droop, known 0.20 kg | 8 vs 5 | **−86.9%** | **−99.4%** |
-| Cost of an unmodelled 0.20 kg payload | 6 vs 2 | **5.2× worse** | **64× worse** |
-| RLS recovers it, 0.10 kg | 4 vs 3 | **−68.9%** | **−91.6%** |
-| RLS recovers it, 0.20 kg | 7 vs 6 | **−83.4%** | **−96.9%** |
-| **RLS gap recovery toward the perfect-model bound, 0.20 kg** | (6−7)/(6−8) | **102.4%** | **97.8%** |
+
+| Comparison                                                   | Reference   | Arm RMS        | EE miss       |
+| ------------------------------------------------------------ | ----------- | -------------- | ------------- |
+| Computed torque removes gravity droop, empty arm             | 2 vs 1      | **−70.5%**     | **−97.7%**    |
+| Computed torque removes gravity droop, known 0.20 kg         | 8 vs 5      | **−86.9%**     | **−99.4%**    |
+| Cost of an unmodelled 0.20 kg payload                        | 6 vs 2      | **5.2× worse** | **64× worse** |
+| RLS recovers it, 0.10 kg                                     | 4 vs 3      | **−68.9%**     | **−91.6%**    |
+| RLS recovers it, 0.20 kg                                     | 7 vs 6      | **−83.4%**     | **−96.9%**    |
+| **RLS gap recovery toward the perfect-model bound, 0.20 kg** | (6−7)/(6−8) | **102.4%**     | **97.8%**     |
+
 
 The 102.4% slightly exceeds 100% because the residual Coulomb-friction deadband
 differs between trajectories. It is not evidence that an estimated model beats
@@ -185,11 +201,13 @@ perfect knowledge.
 
 Mass identification in simulation:
 
-| Plant mass [kg] | Raw estimate [kg] | Empty-bias corrected [kg] | Error | Convergence [s] |
-|---|---|---|---|---|
-| 0.00 | `−0.009628` | — | — | 2.395 |
-| 0.10 | `0.093058` | `0.102685` | **+2.7 g** | 2.735 |
-| 0.20 | `0.192716` | `0.202344` | **+2.3 g** | 1.995 |
+
+| Plant mass [kg] | Raw estimate [kg] | Empty-bias corrected [kg] | Error      | Convergence [s] |
+| --------------- | ----------------- | ------------------------- | ---------- | --------------- |
+| 0.00            | `−0.009628`       | —                         | —          | 2.395           |
+| 0.10            | `0.093058`        | `0.102685`                | **+2.7 g** | 2.735           |
+| 0.20            | `0.192716`        | `0.202344`                | **+2.3 g** | 1.995           |
+
 
 The negative empty-arm estimate is the measured friction/damping model-bias floor.
 The automated gate is frozen at 3.5 g, chosen after measurement at ~30% margin
@@ -205,32 +223,36 @@ execute.
 
 `ubuntu-realtime` 1.1.3 from `resolute/main`; no Ubuntu Pro subscription required.
 
-| Bench | Load | n | Min | Avg | p99 | p99.9 | Max |
-|---|---|---|---|---|---|---|---|
-| `cyclictest -p 80` | generic kernel, idle | 20k | 2 | 2 | — | — | 4 µs |
-| `cyclictest -p 80` | realtime, idle | 20k | 2 | 2 | — | — | 6 µs |
-| `cyclictest -p 80` | realtime, `stress-ng` | 60k | 2 | 2 | — | — | 27 µs |
-| `rt_jitter_bench` (in-repo) | idle | 20k | 2.20 | 2.43 | 2.88 | 3.34 | **6.89 µs** |
-| `rt_jitter_bench` (in-repo) | `stress-ng` | 60k | 2.22 | 3.38 | **6.18** | **11.34** | 438 µs |
+
+| Bench                       | Load                  | n   | Min  | Avg  | p99      | p99.9     | Max         |
+| --------------------------- | --------------------- | --- | ---- | ---- | -------- | --------- | ----------- |
+| `cyclictest -p 80`          | generic kernel, idle  | 20k | 2    | 2    | —        | —         | 4 µs        |
+| `cyclictest -p 80`          | realtime, idle        | 20k | 2    | 2    | —        | —         | 6 µs        |
+| `cyclictest -p 80`          | realtime, `stress-ng` | 60k | 2    | 2    | —        | —         | 27 µs       |
+| `rt_jitter_bench` (in-repo) | idle                  | 20k | 2.20 | 2.43 | 2.88     | 3.34      | **6.89 µs** |
+| `rt_jitter_bench` (in-repo) | `stress-ng`           | 60k | 2.22 | 3.38 | **6.18** | **11.34** | 438 µs      |
+
 
 The operational numbers are the loaded percentiles. The loaded maximum of
-438 µs still meets the 5 ms period — **and `cyclictest` did not
-reproduce it under the same load, so an application-side cause in `rt_jitter_bench`
-is not excluded.** An earlier bench built on `std::this_thread::sleep_until`
+438 µs still meets the 5 ms period — **and** `cyclictest` **did not
+reproduce it under the same load, so an application-side cause in** `rt_jitter_bench`
+**is not excluded.** An earlier bench built on `std::this_thread::sleep_until`
 measured 477 µs idle max and was discarded: libstdc++ may wait with a *relative*
 `nanosleep`, which picks up timer slack. That was never a kernel number.
 
-![PREEMPT_RT wakeup jitter](docs/figures/rt_jitter.png)
+PREEMPT_RT wakeup jitter
 
 ### Hardware — SO-ARM101, 6× STS3215 @ 200 Hz
 
 Bus round-trip over 2000 loops, zero packet loss:
 
-| | p99.9 | share of the 5 ms period |
-|---|---|---|
-| `sync_read` | 1.95 ms | 39% |
-| `sync_write` | 0.19 ms | 4% |
-| **together** | **2.14 ms** | **43%** |
+
+|              | p99.9       | share of the 5 ms period |
+| ------------ | ----------- | ------------------------ |
+| `sync_read`  | 1.95 ms     | 39%                      |
+| `sync_write` | 0.19 ms     | 4%                       |
+| **together** | **2.14 ms** | **43%**                  |
+
 
 Write p99.9 is still 0.19 ms after waiting for `TIOCOUTQ == 0` (max 0.29 ms).
 That is kernel queue drained into the USB stack, not UART wire-time.
@@ -249,10 +271,10 @@ four per-joint settled RMS values (the pooled RMS of those joints' errors over
 `t ≥ 1.5 s`). That is not the simulation aggregator, which is the arithmetic
 mean of five per-joint RMS values including wrist-roll.
 
-These campaign logs predate `SCHED_FIFO`/`mlockall` integration in
-`hardware_run`; they establish tracking behavior, not RT execution. Current logs
-record `rt_fifo`, `rt_mlockall` and deadline health in their CSV header. A
-replacement campaign must rerun all five controllers at both masses.
+`hardware_run` now requests `SCHED_FIFO`/`mlockall` for the tracking loop.
+These archived campaign CSVs predate that (no `rt_fifo` in the header), so they
+establish tracking, not RT execution. A replacement campaign must rerun all
+five controllers at both masses.
 
 Hardware uses the same PD and computed-torque classes as simulation. The
 gains are not the same (`Kp = (8, 12, 2, 8, 8, 0)` and acceleration-domain
@@ -268,11 +290,13 @@ is not ruled out.
 
 #### Identifying the payload
 
-| Method | Result | vs truth |
-|---|---|---|
-| Online `q̈` RLS, ported unchanged from sim | 0.0008 kg at 90 g; 0.0094 kg at 180 g | **fails; tracks like empty-model CT** |
-| Static `Present_Current` ID, **raw** | 0.181 kg at 90 g; 0.400 kg at 180 g | **+91 g / +220 g** |
-| Static `Present_Current` ID, **affine-corrected** | 0.0828 kg at 90 g; 0.1760 kg at 180 g | **−7.2 g / −4.0 g** |
+
+| Method                                            | Result                                | vs truth                              |
+| ------------------------------------------------- | ------------------------------------- | ------------------------------------- |
+| Online `q̈` RLS, ported unchanged from sim        | 0.0008 kg at 90 g; 0.0094 kg at 180 g | **fails; tracks like empty-model CT** |
+| Static `Present_Current` ID, **raw**              | 0.181 kg at 90 g; 0.400 kg at 180 g   | **+91 g / +220 g**                    |
+| Static `Present_Current` ID, **affine-corrected** | 0.0828 kg at 90 g; 0.1760 kg at 180 g | **−7.2 g / −4.0 g**                   |
+
 
 Affine fit over four masses (0 / 90 / 180 / 273 g):
 `m_raw = 2.31501·m_true − 0.01229 kg`, so `m_cal = (m_raw + 0.01229)/2.31501`.
@@ -288,37 +312,39 @@ single draws from that distribution, not evidence of 2% accuracy.
 
 #### What the correction buys in closed loop
 
-| mass | controller | mass used [kg] | lift offset [rad] | elbow offset [rad] | arm RMS excl. roll [rad] | EE z [m] |
-|---|---|---:|---:|---:|---:|---:|
-| 90 g | PD | — | −0.0133 | −0.0514 | 0.0268 | 0.132 |
-| 90 g | CT, empty model | 0 | −0.0087 | −0.0146 | 0.0093 | 0.145 |
-| 90 g | static ID, raw | 0.1813 | −0.0010 | +0.0237 | 0.0127 | 0.159 |
-| 90 g | **static ID, affine** | **0.0828** | −0.0041 | **+0.0053** | **0.0064** | 0.153 |
-| 90 g | motion `q̈` RLS | 0.0008 | −0.0087 | −0.0161 | 0.0100 | 0.145 |
-| 180 g | PD | — | −0.0240 | −0.0668 | 0.0356 | 0.124 |
-| 180 g | CT, empty model | 0 | −0.0179 | −0.0299 | 0.0177 | 0.137 |
-| 180 g | static ID, raw | 0.4002 | −0.0072 | +0.0406 | 0.0215 | 0.162 |
-| 180 g | **static ID, affine** | **0.1760** | −0.0164 | **+0.0069** | **0.0097** | 0.148 |
-| 180 g | motion `q̈` RLS | 0.0094 | −0.0179 | −0.0299 | 0.0178 | 0.137 |
 
-![Elbow tracking error, 90 g and 180 g](docs/figures/final_campaign_elbow.svg)
+| mass  | controller            | mass used [kg] | lift offset [rad] | elbow offset [rad] | arm RMS excl. roll [rad] | EE z [m] |
+| ----- | --------------------- | -------------- | ----------------- | ------------------ | ------------------------ | -------- |
+| 90 g  | PD                    | —              | −0.0133           | −0.0514            | 0.0268                   | 0.132    |
+| 90 g  | CT, empty model       | 0              | −0.0087           | −0.0146            | 0.0093                   | 0.145    |
+| 90 g  | static ID, raw        | 0.1813         | −0.0010           | +0.0237            | 0.0127                   | 0.159    |
+| 90 g  | **static ID, affine** | **0.0828**     | −0.0041           | **+0.0053**        | **0.0064**               | 0.153    |
+| 90 g  | motion `q̈` RLS       | 0.0008         | −0.0087           | −0.0161            | 0.0100                   | 0.145    |
+| 180 g | PD                    | —              | −0.0240           | −0.0668            | 0.0356                   | 0.124    |
+| 180 g | CT, empty model       | 0              | −0.0179           | −0.0299            | 0.0177                   | 0.137    |
+| 180 g | static ID, raw        | 0.4002         | −0.0072           | +0.0406            | 0.0215                   | 0.162    |
+| 180 g | **static ID, affine** | **0.1760**     | −0.0164           | **+0.0069**        | **0.0097**               | 0.148    |
+| 180 g | motion `q̈` RLS       | 0.0094         | −0.0179           | −0.0299            | 0.0178                   | 0.137    |
+
+
+Elbow tracking error, 90 g and 180 g
 
 Four things the table and figure show together:
 
 - **Gravity compensation is most of the win.** PD → computed torque with the
-  empty model cuts arm RMS **65%** at 90 g and **50%** at 180 g, before any
-  payload estimation at all.
+empty model cuts arm RMS **65%** at 90 g and **50%** at 180 g, before any
+payload estimation at all.
 - **An uncalibrated payload estimate is worse than none.** Raw static ID reads
-  0.181 kg for a 90 g payload, over-compensates, and ends *further* from target
-  than empty-model CT (0.0127 vs 0.0093 rad). A biased mass in an otherwise
-  correct model actively hurts.
+0.181 kg for a 90 g payload, over-compensates, and ends *further* from target
+than empty-model CT (0.0127 vs 0.0093 rad). A biased mass in an otherwise
+correct model actively hurts.
 - **The affine correction is what makes the estimate useful.** Against raw static
-  ID it cuts elbow offset **78% / 83%** and arm RMS **49% / 55%**; against
-  empty-model CT it wins by **31% / 45%**.
+ID it cuts elbow offset **78% / 83%** and arm RMS **49% / 55%**; against
+empty-model CT it wins by **31% / 45%**.
 - **Motion RLS estimates ≈ 0 and tracks close to empty-model CT.** No-roll RMS is
-  6.7% worse at 90 g and 0.6% worse at 180 g. These final estimates are small and
-  positive, so they pass through the projection clamp nearly unchanged; the
-  clamp only suppressed negative estimates in earlier runs.
+6.7% worse at 90 g and 0.6% worse at 180 g. These final estimates are small and
+positive, so they pass through the projection clamp nearly unchanged; the
+clamp only suppressed negative estimates in earlier runs.
 
 Per-run console output and hardware CSVs are archived in
 `docs/data/final_campaign/`. Regenerate the table with
@@ -335,22 +361,24 @@ model.
 
 ---
 
+
+
 ## The sim-to-real finding, and what closed it
 
 `τ_applied − ID_empty(q, q̇, q̈) = Φ(q, q̇, q̈)·m` is a valid identity on a torque
 plant. In the current hardware implementation it fails for four coupled reasons:
 
-1. **`τ` is not plant torque.** It is a Goal_Position overlay; the STS3215's own
-   inner PD produces the torque that actually holds the arm. Structural — it does
+1. `τ` **is not plant torque.** It is a Goal_Position overlay; the STS3215's own
+  inner PD produces the torque that actually holds the arm. Structural — it does
    not vanish at rest.
-2. **`q̈` is a double difference of a 12-bit encoder.** One LSB at 200 Hz is
-   `q̇ = 0.307 rad/s` and `q̈ = 61.4 rad/s²`, against a true min-jerk peak near
+2. `q̈` **is a double difference of a 12-bit encoder.** One LSB at 200 Hz is
+  `q̇ = 0.307 rad/s` and `q̈ = 61.4 rad/s²`, against a true min-jerk peak near
    4.6 rad/s². Noise is ~13× signal — and it sits in the *regressor*, so it biases
    systematically rather than averaging out (errors-in-variables).
 3. **Fake inertia swamps gravity.** Pinocchio armature 0.028 × 61.4 = 1.72 N·m per
-   LSB — already 2.1× the empty lift gravity torque, with the wrong sign, 799 times.
+  LSB — already 2.1× the empty lift gravity torque, with the wrong sign, 799 times.
 4. **Friction floor scaled ~18×** versus simulation on an earlier 151 g run
-   (`raw_mass = −0.175 kg` vs sim `−0.0096 kg`), consistent with an unmodelled
+  (`raw_mass = −0.175 kg` vs sim `−0.0096 kg`), consistent with an unmodelled
    datasheet 345:1 gearbox. The final campaign's motion estimates are small and
    positive instead — the failure shape is not unique. The unfiltered regressor
    used here does not retain enough payload information at this encoder
@@ -373,45 +401,46 @@ against separate, protocol-matched runs using the raw estimate.
 
 ---
 
+
+
 ## What this does not claim
 
 - **The hardware PD vs computed-torque comparison is not a matched-gain
-  repeat of the sim one.** Same controller classes, different gains, and on
-  hardware a position overlay on the servo's inner PD. The −65% / −50% is
-  still that comparison on the arm; it is not the sim −87% experiment.
-- **Only the elbow's `K_servo` is identified** (≈ 11 N·m/rad, from `g(q)`/droop on
-  a settled stream). The map is `(50, 90, 11, 50, 50, 50)`; the other five
-  entries are frozen placeholders, including wrist-flex, which carries real
-  gravity torque. Elbow
-  ≈ 11 against lift 90 on nominally identical servos is physically odd and
-  unexplained. So the closed-loop result is an elbow result: lift regresses in
-  both calibrated runs, and only the elbow's error-versus-mass slope is
-  physically meaningful.
+repeat of the sim one.** Same controller classes, different gains, and on
+hardware a position overlay on the servo's inner PD. The −65% / −50% is
+still that comparison on the arm; it is not the sim −87% experiment.
+- **Only the elbow's** `K_servo` **is identified** (≈ 11 N·m/rad, from `g(q)`/droop on
+a settled stream). The map is `(50, 90, 11, 50, 50, 50)`; the other five
+entries are frozen placeholders, including wrist-flex, which carries real
+gravity torque. Elbow
+≈ 11 against lift 90 on nominally identical servos is physically odd and
+unexplained. So the closed-loop result is an elbow result: lift regresses in
+both calibrated runs, and only the elbow's error-versus-mass slope is
+physically meaningful.
 - **The mass calibration shows repeatability, not accuracy or generalization.**
-  90 g and 180 g are both fit points, so nothing here tests interpolation — that
-  needs an unseen mass (~130 g, between fit points). And run-to-run spread
-  (7.8 g at 90 g, 14.6 g at 180 g) exceeds the 5.03 g residual standard error, so
-  no single run's error is an accuracy figure.
+90 g and 180 g are both fit points, so nothing here tests interpolation — that
+needs an unseen mass (~130 g, between fit points). And run-to-run spread
+(7.8 g at 90 g, 14.6 g at 180 g) exceeds the 5.03 g residual standard error, so
+no single run's error is an accuracy figure.
 - **It also belongs to one grasp geometry.** Jaw opening moved monotonically with
-  mass as weights were stacked (r = 0.994), so the 2.315 slope conflates
-  instrument scale with grasp geometry. The raw path's ~221 g compensation
-  ceiling is gone, but only for this geometry.
-- **`k_t = −12.5223 N·m/A` is an instrument scale, not a motor constant.** The
-  6.5 mA current LSB and the ~2.5–3 A stall current are datasheet values, not
-  measured here, so the claim that the fit is ~10× inflated by gearbox friction
-  is a hypothesis. One locked-rotor test settles it.
-- **`n = 2` on the closed-loop claim** — one calibrated run at each of two masses,
-  each against one uncalibrated run. The effect is large and its sign is predicted
-  by the model, but this is not a repeated experiment.
+mass as weights were stacked (r = 0.994), so the 2.315 slope conflates
+instrument scale with grasp geometry. The raw path's ~221 g compensation
+ceiling is gone, but only for this geometry.
+- `k_t = −12.5223 N·m/A` **is an instrument scale, not a motor constant.** The
+6.5 mA current LSB and the ~2.5–3 A stall current are datasheet values, not
+measured here, so the claim that the fit is ~10× inflated by gearbox friction
+is a hypothesis. One locked-rotor test settles it.
 - **No external benchmark is cited.** A comparison to commercial or published
-  payload ID would require a cited, protocol-matched source.
+payload ID would require a cited, protocol-matched source.
 - **Sim friction is the MuJoCo Menagerie vendor default** (`damping=0.60`,
-  `frictionloss=0.052`, `armature=0.028`) — estimates for this class of servo, not
-  measurements of this arm.
+`frictionloss=0.052`, `armature=0.028`) — estimates for this class of servo, not
+measurements of this arm.
 
 Remaining bench work is listed at the end of [RESULTS.md](RESULTS.md).
 
 ---
+
+
 
 ## Build and run
 
@@ -475,6 +504,8 @@ arm crawls (~0.06 rad/s at `speed = 40`).
 
 ---
 
+
+
 ## Repository layout
 
 ```
@@ -512,6 +543,8 @@ RESULTS.md              canonical numbers -- the source of truth
 ```
 
 ---
+
+
 
 ## License
 
