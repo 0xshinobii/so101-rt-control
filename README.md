@@ -95,7 +95,7 @@ truth — this README summarises it.
 
 ## Architecture and the real-time boundary
 
-Architecture: where the real-time boundary lives
+![Architecture: where the real-time boundary lives](docs/figures/architecture.svg)
 
 The figure shows the ROS 2 node. The hardware runner is a separate binary that
 shares everything below the red line — the same `ControlLoop`, controllers and
@@ -240,7 +240,7 @@ reproduce it under the same load, so an application-side cause in** `rt_jitter_b
 measured 477 µs idle max and was discarded: libstdc++ may wait with a *relative*
 `nanosleep`, which picks up timer slack. That was never a kernel number.
 
-PREEMPT_RT wakeup jitter
+![PREEMPT_RT wakeup jitter](docs/figures/rt_jitter.png)
 
 ### Hardware — SO-ARM101, 6× STS3215 @ 200 Hz
 
@@ -327,7 +327,7 @@ single draws from that distribution, not evidence of 2% accuracy.
 | 180 g | motion `q̈` RLS       | 0.0094         | −0.0179           | −0.0299            | 0.0178                   | 0.137    |
 
 
-Elbow tracking error, 90 g and 180 g
+![Elbow tracking error, 90 g and 180 g](docs/figures/final_campaign_elbow.svg)
 
 Four things the table and figure show together:
 
