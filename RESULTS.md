@@ -10,8 +10,13 @@ moves final elbow offset **+0.0237 → +0.0053 rad** at 90 g and
 **0.0127 → 0.0064** and **0.0215 → 0.0097** — with lift regressing in both, on
 placeholder `K_servo`. Corrected mass lands **−7.2 g** at 90 g and **−4.0 g** at
 180 g, but run-to-run spread (**7.8 g** at 90 g, **14.6 g** at 180 g)
-exceeds those errors and is the bound; every mass run so far is a
-fitted mass, so interpolation is untested. Tracking-null on 70 g straddles truth:
+exceeds those errors and is the bound. A held-out **70 g** affine run
+(between the 0 and 90 g fit points) gave raw **0.1191 kg**, compensated
+**0.0567 kg** (**−13.3 g**), elbow offset **+0.0038 rad**, no-roll RMS
+**0.0045 rad**. That mass error is the same order as the 180 g repeat
+spread. Jaw opening was **−0.014 rad**, not the stacked-weight series, so
+this tests a new mass on a **different grasp**, not same-geometry
+interpolation. Tracking-null on an earlier 70 g pair still straddles truth:
 elbow **0.058 kg**, lift **~0.155 kg** (0.070 physical); elbow is the one joint
 with identified `K_servo`.
 
@@ -545,13 +550,25 @@ An independent repeat at 180 g (not refit) returned raw **0.4246 kg**:
 the affine map gives **0.18872 kg**, an **+8.72 g validation error**. Across
 five 180 g static-ID runs, raw ID spans 0.39084–0.42460 kg; after calibration that is
 0.17414–0.18872 kg, a **14.6 g** spread. This is **repeat-run validation at a
-fitted mass**, not generalization to an unseen mass: +8.72 g is of the same
-order as the repeat spread and is consistent with run noise. A true held-out
-interpolation test needs a fifth mass not used in the fit (roughly 130 g would
-sit between fitted points). The defensible headline is therefore **4.8%
+fitted mass**: +8.72 g is of the same order as the repeat spread and is
+consistent with run noise. The defensible in-sample headline remains **4.8%
 repeat-run error with an 8.1% three-run spread**, not the 3.56 g in-sample
-RMSE. This is a single-digit-percent result; labeling it “research-grade”
-would require a cited, protocol-matched external benchmark.
+RMSE. Labeling it “research-grade” would still require a cited,
+protocol-matched external benchmark.
+
+A held-out **70 g** object (not in the 0 / 90 / 180 / 273 g fit), same
+`kTarget` two-way protocol and affine map inside the controller, returned
+raw **0.1191 kg** and compensated **0.0567 kg** (**−13.3 g / −19%**). The
+2.315 line predicted raw ≈ 0.150 kg at 70 g. Offset-consistent slope
+`(m_raw + 0.01229) / 0.070 = 1.88` vs the fit **2.315** (raw/mass through
+the origin is 1.70 and is not the same convention). Jaw opening stayed **−0.0138 rad** (0 LSB drift), unlike
+the stacked-weight series (−0.232 … +0.020 rad), so the COM is not the
+calibration grasp. Closed-loop offsets at 4 s: lift **−0.0026 rad**, elbow
+**+0.0038 rad**; settled no-roll RMS **0.0045 rad**; EE z **0.153 m**.
+`rt_fifo=1`, `rt_mlockall=1`, zero bus faults. Log:
+`docs/data/interp_70g/hw_70g_affine.csv`. The mass residual sits inside the
+14.6 g 180 g repeat envelope. It does **not** show that a different footprint
+shares the 2.315 slope.
 
 A second repeat at 90 g exercised the affine map **inside the controller,
 before `[0, 0.5]` projection**. Raw **0.18624 kg** became **0.08576 kg**:
@@ -592,8 +609,9 @@ the geometry collinearity prevents attributing the change to `k_t` alone.
 Logs: `docs/data/hw_id_000.csv`, `docs/data/hw_id_090.csv`,
 `docs/data/hw_id_0181.csv`, `docs/data/hw_id_0181_repeat.csv`,
 `docs/data/hw_id_0273.csv`, `docs/data/hw_affine_090.csv`,
-`docs/data/hw_affine_0180.csv`. The two `0181` filenames retain the original
-mistyped label; their physical mass was 180 g.
+`docs/data/hw_affine_0180.csv`, `docs/data/interp_70g/hw_70g_affine.csv`.
+The two `0181` filenames retain the original mistyped label; their physical
+mass was 180 g.
 
 ### Final matched 90 / 180 g campaign
 
@@ -636,8 +654,9 @@ at 90 / 180 g and track like CT-empty. Current-ID
 raw scale is ~2.31× in this four-mass stacking geometry; affine correction
 gives final-campaign errors **−7.2 g at 90 g** and **−4.0 g at 180 g**.
 Applying it before the clamp reduced elbow offset by 78% / 83% and no-roll
-RMS by 49% / 55%; unseen-mass interpolation is not yet tested.
-Elbow tracking-null on 70 g is 0.058 kg; lift says ~0.155 kg. Highest-value
+RMS by 49% / 55%. Held-out **70 g** (affine in-controller) is **−13.3 g**
+with elbow **+0.0038 rad**; that mass is new, the grasp is not the stack.
+Elbow tracking-null on an earlier 70 g pair is 0.058 kg; lift says ~0.155 kg. Highest-value
 remaining hardware is the **locked-rotor** check (reg 69 vs ammeter + stall
 current), followed by fixed-geometry repeatability. Variable load in one
 tracking run is out of scope.

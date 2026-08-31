@@ -1,0 +1,15 @@
+gripper hold q=-0.241 rad  tick=1758  torque_limit=200 (min_ticks)
+hardware  controller=adaptive_computed_torque  payload=70 g (physical)  K=(50,90,11,50,50,50)
+hold 70 g in the jaws — squeeze, home, then 4 s min-jerk
+static-gravity  kt=-12.522 N.m/A  1-pose two-way ID this run, then freeze
+mass calibration  physical=(raw+0.01229)/2.31501, then clamp [0,0.5]
+home q=(0.008,0.075,0.005,0.025,0.028,-0.014)
+1-pose static ID (two-way current at kTarget) — ~8 s
+id  q=(0.597,0.747,-0.790,0.499,0.371)  tau=(-1.550,-0.492,-0.112)  m=0.1191 kg
+id  jaw q -0.0138 -> -0.0138 rad  drift +0.0000 (0.0 LSB)
+this-run LS raw_mass=0.1191 kg  calibrated=0.0567 kg  (frozen)
+rt  mlockall=1 fifo=1 affinity=0 cstates=0
+rt warnings: open(/dev/cpu_dma_latency): No such file or directory
+wrote /work/docs/data/interp_70g/hw_70g_affine.csv  final q=(0.594,0.703,-0.804,0.495,0.371,-0.014) ee=(0.3803,-0.2263,0.1526)
+run health  stale_reads=0  failed_writes=0  tick_clamps=0  lead_saturations=0  late_ticks=0 (max 0.0 us)  bus_timeouts=0  checksum_errors=0
+mass raw=0.1191 kg  compensated=0.0567 kg  estimator updates=0

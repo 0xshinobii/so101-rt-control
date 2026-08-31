@@ -417,11 +417,18 @@ gravity torque. Elbow
 unexplained. So the closed-loop result is an elbow result: lift regresses in
 both calibrated runs, and only the elbow's error-versus-mass slope is
 physically meaningful.
-- **The mass calibration shows repeatability, not accuracy or generalization.**
-90 g and 180 g are both fit points, so nothing here tests interpolation — that
-needs an unseen mass (~130 g, between fit points). And run-to-run spread
-(7.8 g at 90 g, 14.6 g at 180 g) exceeds the 5.03 g residual standard error, so
-no single run's error is an accuracy figure.
+- **The mass calibration is a repeatability bound, not a single-run accuracy
+  figure.** Run-to-run spread (7.8 g at 90 g, 14.6 g at 180 g) exceeds the
+  5.03 g residual standard error, so no one run's error is an accuracy number.
+  A held-out **70 g** object — a mass not in the 0 / 90 / 180 / 273 g fit —
+  came back at **56.7 g** (**−13.3 g, −19%**), inside the 14.6 g repeat
+  envelope but well outside the in-sample −7.2 / −4.0 g. It also arrived on a
+  **different grasp**: jaw opening held at −0.0138 rad instead of following the
+  stacked-weight series. So the map survives an unseen mass on a new footprint
+  at noise-floor accuracy; **same-geometry interpolation is still untested**,
+  and a changed COM changes `Φ_g`, so 2.315 belongs to this class of stack
+  rather than an arbitrary payload. Log:
+  `docs/data/interp_70g/hw_70g_affine.csv`.
 - **It also belongs to one grasp geometry.** Jaw opening moved monotonically with
 mass as weights were stacked (r = 0.994), so the 2.315 slope conflates
 instrument scale with grasp geometry. The raw path's ~221 g compensation

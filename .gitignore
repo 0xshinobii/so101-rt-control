@@ -21,6 +21,7 @@ build/
 # Hardware logs are evidence, not output: RESULTS.md cites them by name.
 !docs/data/*.csv
 !docs/data/final_campaign/*.csv
+!docs/data/interp_70g/*.csv
 
 # colcon / ROS 2 workspace build artifacts
 ros2_ws/build/
