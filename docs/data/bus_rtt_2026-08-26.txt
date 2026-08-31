@@ -1,0 +1,16 @@
+# bus_timing stdout, 2026-08-26, docker on i7, kernel-queue drain writes.
+# Command: ros2 run arm_control bus_timing
+# No --csv was passed; per-loop samples were not saved.
+# This summary is the source of the quoted 1.95 / 0.19 / 2.14 ms numbers.
+ping id=1 ok
+ping id=2 ok
+ping id=3 ok
+ping id=4 ok
+ping id=5 ok
+ping id=6 ok
+checksum_errors=0 timeouts=0 rx=12000 tx=4000
+packet_loss_frac=0.000000  (timeouts+checksum)/loops
+sync_read n=2000 Min: 1478.7 Avg: 1830.7 p99: 1929.2 p99.9: 1949.2 Max: 1959.2  (us)
+sync_write n=2000 Min: 114.4 Avg: 159.8 p99: 173.6 p99.9: 190.8 Max: 289.8  (us)
+suggested f_hw <= 410.4 Hz  (0.8 / p99.9_read)
+suggested bus_timeout_ns = 5847510  (3 * p99.9_read)

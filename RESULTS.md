@@ -238,11 +238,13 @@ Tools: [`ros2_ws/src/arm_control/src/rt_jitter_bench.cpp`](ros2_ws/src/arm_contr
 ## Phase 7 — SO-ARM101 hardware, matched-rate min-jerk
 
 Follower: ThinkRobotics SO-ARM101, 6× STS3215 on `/dev/ttyACM0` (WCH 1a86).
-`f_hw = 200 Hz` (`dt = 0.005`), same as `so101_torque.xml`. Bus RTT (2000
-loops, zero loss): sync_read p99.9 1.95 ms, sync_write p99.9 0.19 ms
-(kernel queue drained, max 0.29 ms — not wire-time), I/O together ~2.14 ms
-(~43% of the 5 ms period). Runner deadlines are 2.5 ms read / 0.75 ms write,
-capped to the remaining period.
+`f_hw = 200 Hz` (`dt = 0.005`), same as `so101_torque.xml`. Bus RTT quoted
+everywhere is the 2026-08-26 `bus_timing` stdout (2000 loops, zero loss;
+[`docs/data/bus_rtt_2026-08-26.txt`](docs/data/bus_rtt_2026-08-26.txt)):
+sync_read p99.9 1.95 ms, sync_write p99.9 0.19 ms (kernel queue drained, max
+0.29 ms — not wire-time), I/O together ~2.14 ms (~43% of the 5 ms period).
+`--csv` was not passed, so per-loop samples from that run do not exist.
+Runner deadlines are 2.5 ms read / 0.75 ms write, capped to the remaining period.
 Read is ~10× write, more than packet size alone explains. Per-servo Return
 Delay Time (register 7) is the likely dominant term, but was not verified.
 

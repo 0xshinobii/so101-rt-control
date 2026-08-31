@@ -83,7 +83,7 @@ are therefore comparable only within a plant, not across.
 
 **Real-time and bus** (separate benches, not tracking runs): loaded wakeup jitter
 p99 **6.18 µs**, p99.9 **11.34 µs** on a 5000 µs period; serial round-trip
-**~2.14 ms**, ~189× the scheduler latency, 38–43% of the period.
+**~2.14 ms**, ~189× the scheduler latency, 43% of the period.
 
 Every number above is measured on this repo's code. Full derivation, discarded
 runs, and caveats are in **[RESULTS.md](RESULTS.md)**, which is the source of
@@ -95,7 +95,7 @@ truth — this README summarises it.
 
 ## Architecture and the real-time boundary
 
-![Architecture: where the real-time boundary lives](docs/figures/architecture.svg)
+![Architecture: where the real-time boundary lives](docs/figures/architecture.png)
 
 The figure shows the ROS 2 node. The hardware runner is a separate binary that
 shares everything below the red line — the same `ControlLoop`, controllers and
@@ -327,7 +327,7 @@ single draws from that distribution, not evidence of 2% accuracy.
 | 180 g | motion `q̈` RLS       | 0.0094         | −0.0179           | −0.0299            | 0.0178                   | 0.137    |
 
 
-![Elbow tracking error, 90 g and 180 g](docs/figures/final_campaign_elbow.svg)
+![Elbow tracking error, 90 g and 180 g](docs/figures/final_campaign_elbow.png)
 
 Four things the table and figure show together:
 

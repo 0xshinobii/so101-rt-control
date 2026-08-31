@@ -271,7 +271,7 @@ box(56, 670, 340, 140, "MujocoBackend  —  simulation",
            "",
            "A blocking equivalence gate runs before any controller:",
            "gravity, nonlinear bias and the mass matrix must agree",
-           "with Pinocchio to ~1e-13 N·m over five poses."),
+           "with Pinocchio to 1e-15 / 1e-13 N·m over five poses."),
     stroke="#bfdbfe")
 
 box(412, 670, 372, 140, "HardwareBackend  —  SO-ARM101",
@@ -300,7 +300,7 @@ bar_x, bar_y, bar_w, bar_h = BX + 18, 386, 260, 28
 px_per_us = bar_w / 5000.0
 
 rect(bar_x, bar_y, bar_w, bar_h, fill="#e2e8f0", stroke="#cbd5e1", rx=3)
-rect(bar_x, bar_y, 1900 * px_per_us, bar_h, fill=PLANT_BLUE, stroke=PLANT_BLUE,
+rect(bar_x, bar_y, 2140 * px_per_us, bar_h, fill=PLANT_BLUE, stroke=PLANT_BLUE,
      rx=3)
 # At this scale the OS wakeup is 0.6 px wide. That invisibility is the finding,
 # so it is floored to 2 px rather than dropped.
@@ -313,8 +313,8 @@ text(bar_x + bar_w, bar_y + bar_h + 14, "5 ms  (one control period)", size=10,
 
 legend = [
     (RT_RED, RT_RED, "OS wakeup jitter", "11 µs", "0.23%"),
-    (PLANT_BLUE, PLANT_BLUE, "serial bus I/O", "1.90 ms", "38%"),
-    ("#e2e8f0", "#94a3b8", "headroom", "3.09 ms", "62%"),
+    (PLANT_BLUE, PLANT_BLUE, "serial bus I/O", "2.14 ms", "43%"),
+    ("#e2e8f0", "#94a3b8", "headroom", "2.86 ms", "57%"),
 ]
 ly = bar_y + bar_h + 34
 for fill_c, stroke_c, label, value, pct in legend:
@@ -331,7 +331,7 @@ rows = [
     ("rt_jitter_bench idle max", "6.89 µs"),
     ("rt_jitter_bench loaded p99", "6.18 µs"),
     ("rt_jitter_bench loaded p99.9", "11.34 µs"),
-    ("sync_read p99.9", "1.71 ms"),
+    ("sync_read p99.9", "1.95 ms"),
     ("sync_write p99.9", "0.19 ms"),
     ("packet loss, 2000 loops", "0"),
 ]
@@ -350,7 +350,7 @@ text(BX + 32, 724, "The CPU was never the bottleneck.", size=12,
      weight="700", fill=RT_RED)
 text(BX + 32, 748, "Loaded p99.9 wakeup is 11.34 µs on a", size=10.5,
      fill="#7f1d1d")
-text(BX + 32, 763, "5000 µs period. The servo bus is ~168×", size=10.5,
+text(BX + 32, 763, "5000 µs period. The servo bus is ~189×", size=10.5,
      fill="#7f1d1d")
 text(BX + 32, 778, "longer than the scheduler latency.", size=10.5,
      fill="#7f1d1d")
@@ -407,9 +407,9 @@ def main() -> None:
 
     png = os.path.splitext(args.out)[0] + ".png"
     try:
-        import cairosvg  # optional; SVG is the committed source of truth
-    except ImportError:
-        print("cairosvg not installed -- skipping PNG export")
+        import cairosvg  # optional; PNG if cairo is available
+    except (ImportError, OSError):
+        print("cairosvg/cairo not available -- skipping PNG export")
         return
     cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=png, scale=2.0)
     print(f"wrote {png}")
