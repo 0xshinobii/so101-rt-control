@@ -1,0 +1,59 @@
+[0.000000] (-) TimerEvent: {}
+[0.000592] (ur5e_moveit_config) JobQueued: {'identifier': 'ur5e_moveit_config', 'dependencies': OrderedDict()}
+[0.000787] (ur5e_moveit_config) JobStarted: {'identifier': 'ur5e_moveit_config'}
+[0.011331] (ur5e_moveit_config) JobProgress: {'identifier': 'ur5e_moveit_config', 'progress': 'cmake'}
+[0.011833] (ur5e_moveit_config) Command: {'cmd': ['/usr/bin/cmake', '/work/moveit_ws/src/ur5e_moveit_config', '-DCMAKE_INSTALL_PREFIX=/work/moveit_ws/install/ur5e_moveit_config'], 'cwd': '/work/moveit_ws/build/ur5e_moveit_config', 'env': OrderedDict({'GZ_SIM_RESOURCE_PATH': '/opt/ros/jazzy/share', 'GZ_CONFIG_PATH': '/opt/ros/jazzy/opt/gz_sim_vendor/share/gz:/opt/ros/jazzy/opt/sdformat_vendor/share/gz:/opt/ros/jazzy/opt/gz_gui_vendor/share/gz:/opt/ros/jazzy/opt/gz_transport_vendor/share/gz:/opt/ros/jazzy/opt/gz_rendering_vendor/share/gz:/opt/ros/jazzy/opt/gz_plugin_vendor/share/gz:/opt/ros/jazzy/opt/gz_fuel_tools_vendor/share/gz:/opt/ros/jazzy/opt/gz_msgs_vendor/share/gz:/opt/ros/jazzy/opt/gz_common_vendor/share/gz', 'HOSTNAME': 'atul-H110M-H', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/opt/ros/jazzy/opt/gz_sim_vendor/lib:/opt/ros/jazzy/opt/gz_sensors_vendor/lib:/opt/ros/jazzy/opt/gz_physics_vendor/lib:/opt/ros/jazzy/opt/sdformat_vendor/lib:/opt/ros/jazzy/opt/rviz_ogre_vendor/lib:/opt/ros/jazzy/lib/x86_64-linux-gnu:/opt/ros/jazzy/opt/gz_gui_vendor/lib:/opt/ros/jazzy/opt/gz_transport_vendor/lib:/opt/ros/jazzy/opt/gz_rendering_vendor/lib:/opt/ros/jazzy/opt/gz_plugin_vendor/lib:/opt/ros/jazzy/opt/gz_fuel_tools_vendor/lib:/opt/ros/jazzy/opt/gz_msgs_vendor/lib:/opt/ros/jazzy/opt/gz_common_vendor/lib:/opt/ros/jazzy/opt/gz_math_vendor/lib:/opt/ros/jazzy/opt/gz_utils_vendor/lib:/opt/ros/jazzy/opt/gz_tools_vendor/lib:/opt/ros/jazzy/opt/gz_ogre_next_vendor/lib:/opt/ros/jazzy/opt/gz_dartsim_vendor/lib:/opt/ros/jazzy/opt/gz_cmake_vendor/lib:/opt/ros/jazzy/lib:/opt/mujoco/lib', 'HOME': '/root', 'OLDPWD': '/work/moveit_ws/ur5e_moveit_config', 'ROS_PYTHON_VERSION': '3', 'ROS_DISTRO': 'jazzy', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'TERM': 'xterm', 'PATH': '/opt/ros/jazzy/opt/gz_msgs_vendor/bin:/opt/ros/jazzy/opt/gz_tools_vendor/bin:/opt/ros/jazzy/opt/gz_ogre_next_vendor/bin:/opt/ros/jazzy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'MUJOCO_DIR': '/opt/mujoco', 'DISPLAY': ':0', 'LANG': 'C.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.avif=01;35:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:*~=00;90:*#=00;90:*.bak=00;90:*.crdownload=00;90:*.dpkg-dist=00;90:*.dpkg-new=00;90:*.dpkg-old=00;90:*.dpkg-tmp=00;90:*.old=00;90:*.orig=00;90:*.part=00;90:*.rej=00;90:*.rpmnew=00;90:*.rpmorig=00;90:*.rpmsave=00;90:*.swp=00;90:*.tmp=00;90:*.ucf-dist=00;90:*.ucf-new=00;90:*.ucf-old=00;90:', 'AMENT_PREFIX_PATH': '/opt/ros/jazzy', 'DEBIAN_FRONTEND': 'noninteractive', 'ROS_AUTOMATIC_DISCOVERY_RANGE': 'SUBNET', 'PWD': '/work/moveit_ws/build/ur5e_moveit_config', 'LC_ALL': 'C.UTF-8', 'PYTHONPATH': '/opt/ros/jazzy/lib/python3.12/site-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/opt/ros/jazzy/opt/gz_sim_vendor:/opt/ros/jazzy/opt/gz_sensors_vendor:/opt/ros/jazzy/opt/gz_physics_vendor:/opt/ros/jazzy/opt/sdformat_vendor:/opt/ros/jazzy/opt/gz_gui_vendor:/opt/ros/jazzy/opt/gz_transport_vendor:/opt/ros/jazzy/opt/gz_rendering_vendor:/opt/ros/jazzy/opt/gz_plugin_vendor:/opt/ros/jazzy/opt/gz_fuel_tools_vendor:/opt/ros/jazzy/opt/gz_msgs_vendor:/opt/ros/jazzy/opt/gz_common_vendor:/opt/ros/jazzy/opt/gz_math_vendor:/opt/ros/jazzy/opt/gz_utils_vendor:/opt/ros/jazzy/opt/gz_tools_vendor:/opt/ros/jazzy/opt/gz_ogre_next_vendor:/opt/ros/jazzy/opt/gz_dartsim_vendor:/opt/ros/jazzy/opt/gz_cmake_vendor'}), 'shell': False}
+[0.069085] (ur5e_moveit_config) StdoutLine: {'line': b'-- The C compiler identification is GNU 13.3.0\n'}
+[0.099835] (-) TimerEvent: {}
+[0.125809] (ur5e_moveit_config) StdoutLine: {'line': b'-- The CXX compiler identification is GNU 13.3.0\n'}
+[0.141677] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting C compiler ABI info\n'}
+[0.199970] (-) TimerEvent: {}
+[0.232168] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting C compiler ABI info - done\n'}
+[0.241190] (ur5e_moveit_config) StdoutLine: {'line': b'-- Check for working C compiler: /usr/bin/cc - skipped\n'}
+[0.241435] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting C compile features\n'}
+[0.241868] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting C compile features - done\n'}
+[0.251168] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting CXX compiler ABI info\n'}
+[0.300131] (-) TimerEvent: {}
+[0.353288] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting CXX compiler ABI info - done\n'}
+[0.362751] (ur5e_moveit_config) StdoutLine: {'line': b'-- Check for working CXX compiler: /usr/bin/c++ - skipped\n'}
+[0.363175] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting CXX compile features\n'}
+[0.363767] (ur5e_moveit_config) StdoutLine: {'line': b'-- Detecting CXX compile features - done\n'}
+[0.370186] (ur5e_moveit_config) StdoutLine: {'line': b'-- Found ament_cmake: 2.5.6 (/opt/ros/jazzy/share/ament_cmake/cmake)\n'}
+[0.400268] (-) TimerEvent: {}
+[0.500522] (-) TimerEvent: {}
+[0.524403] (ur5e_moveit_config) StdoutLine: {'line': b'-- Found Python3: /usr/bin/python3 (found version "3.12.3") found components: Interpreter \n'}
+[0.600631] (-) TimerEvent: {}
+[0.700887] (-) TimerEvent: {}
+[0.725312] (ur5e_moveit_config) StderrLine: {'line': b"Error parsing '/work/moveit_ws/src/ur5e_moveit_config/package.xml':\n"}
+[0.725652] (ur5e_moveit_config) StderrLine: {'line': b'Traceback (most recent call last):\n'}
+[0.725850] (ur5e_moveit_config) StderrLine: {'line': b'  File "/opt/ros/jazzy/share/ament_cmake_core/cmake/core/package_xml_2_cmake.py", line 150, in <module>\n'}
+[0.726077] (ur5e_moveit_config) StderrLine: {'line': b'    main()\n'}
+[0.726181] (ur5e_moveit_config) StderrLine: {'line': b'  File "/opt/ros/jazzy/share/ament_cmake_core/cmake/core/package_xml_2_cmake.py", line 53, in main\n'}
+[0.726282] (ur5e_moveit_config) StderrLine: {'line': b'    raise e\n'}
+[0.726381] (ur5e_moveit_config) StderrLine: {'line': b'  File "/opt/ros/jazzy/share/ament_cmake_core/cmake/core/package_xml_2_cmake.py", line 49, in main\n'}
+[0.726480] (ur5e_moveit_config) StderrLine: {'line': b'    package = parse_package_string(\n'}
+[0.726578] (ur5e_moveit_config) StderrLine: {'line': b'              ^^^^^^^^^^^^^^^^^^^^^\n'}
+[0.726675] (ur5e_moveit_config) StderrLine: {'line': b'  File "/usr/lib/python3/dist-packages/catkin_pkg/package.py", line 788, in parse_package_string\n'}
+[0.726819] (ur5e_moveit_config) StderrLine: {'line': b'    pkg.validate(warnings=warnings)\n'}
+[0.726888] (ur5e_moveit_config) StderrLine: {'line': b'  File "/usr/lib/python3/dist-packages/catkin_pkg/package.py", line 330, in validate\n'}
+[0.726953] (ur5e_moveit_config) StderrLine: {'line': b"    raise InvalidPackage('\\n'.join(errors), self.filename)\n"}
+[0.727010] (ur5e_moveit_config) StderrLine: {'line': b"catkin_pkg.package.InvalidPackage: Error(s) in package '/work/moveit_ws/src/ur5e_moveit_config/package.xml':\n"}
+[0.727068] (ur5e_moveit_config) StderrLine: {'line': b'Invalid email "" for person "SirGobta"\n'}
+[0.727124] (ur5e_moveit_config) StderrLine: {'line': b'Maintainers must have an email address\n'}
+[0.727180] (ur5e_moveit_config) StderrLine: {'line': b'Invalid email "" for person "SirGobta"\n'}
+[0.738041] (ur5e_moveit_config) StderrLine: {'line': b'\x1b[31mCMake Error at /opt/ros/jazzy/share/ament_cmake_core/cmake/core/ament_package_xml.cmake:95 (message):\n'}
+[0.738339] (ur5e_moveit_config) StderrLine: {'line': b'  execute_process(/usr/bin/python3\n'}
+[0.738563] (ur5e_moveit_config) StderrLine: {'line': b'  /opt/ros/jazzy/share/ament_cmake_core/cmake/core/package_xml_2_cmake.py\n'}
+[0.738707] (ur5e_moveit_config) StderrLine: {'line': b'  /work/moveit_ws/src/ur5e_moveit_config/package.xml\n'}
+[0.738888] (ur5e_moveit_config) StderrLine: {'line': b'  /work/moveit_ws/build/ur5e_moveit_config/ament_cmake_core/package.cmake)\n'}
+[0.739001] (ur5e_moveit_config) StderrLine: {'line': b'  returned error code 1\n'}
+[0.739113] (ur5e_moveit_config) StderrLine: {'line': b'Call Stack (most recent call first):\n'}
+[0.739215] (ur5e_moveit_config) StderrLine: {'line': b'  /opt/ros/jazzy/share/ament_cmake_core/cmake/core/ament_package_xml.cmake:49 (_ament_package_xml)\n'}
+[0.739323] (ur5e_moveit_config) StderrLine: {'line': b'  /opt/ros/jazzy/share/ament_cmake_core/cmake/core/ament_package.cmake:63 (ament_package_xml)\n'}
+[0.739421] (ur5e_moveit_config) StderrLine: {'line': b'  CMakeLists.txt:6 (ament_package)\n'}
+[0.739512] (ur5e_moveit_config) StderrLine: {'line': b'\n'}
+[0.739615] (ur5e_moveit_config) StderrLine: {'line': b'\x1b[0m\n'}
+[0.739712] (ur5e_moveit_config) StdoutLine: {'line': b'-- Configuring incomplete, errors occurred!\n'}
+[0.743358] (ur5e_moveit_config) CommandEnded: {'returncode': 1}
+[0.743945] (ur5e_moveit_config) JobEnded: {'identifier': 'ur5e_moveit_config', 'rc': 1}
+[0.744920] (-) EventReactorShutdown: {}
