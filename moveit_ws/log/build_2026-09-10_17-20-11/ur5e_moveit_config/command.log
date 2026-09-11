@@ -1,2 +1,0 @@
-Invoking command in '/work/moveit_ws/build/ur5e_moveit_config': /usr/bin/cmake /work/moveit_ws/src/ur5e_moveit_config -DCMAKE_INSTALL_PREFIX=/work/moveit_ws/install/ur5e_moveit_config
-Invoked command in '/work/moveit_ws/build/ur5e_moveit_config' returned '1': /usr/bin/cmake /work/moveit_ws/src/ur5e_moveit_config -DCMAKE_INSTALL_PREFIX=/work/moveit_ws/install/ur5e_moveit_config

@@ -28,9 +28,9 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy.spatial import ConvexHull
 
-SRC_URDF = "/work/models/so101/so101_new_calib.urdf"
-SRC_ASSETS = "/work/models/so101/assets"
-PKG_DIR = "/work/moveit_ws/src/so101_description"
+SRC_URDF = "models/so101/so101_new_calib.urdf"
+SRC_ASSETS = "models/so101/assets"
+PKG_DIR = "moveit_ws/src/so101_description"
 PKG_NAME = "so101_description"
 
 # Concave links whose convex hull would be a bad approximation.
