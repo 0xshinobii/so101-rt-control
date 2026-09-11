@@ -27,6 +27,14 @@ build/
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+install/
+log/
+final_campaign/
+bus_timing
+calibrate_so101
+hardware_run
+home_so101
+torque_off_so101
 
 # Local IntelliSense / editor deps (not used by Docker builds)
 .deps/

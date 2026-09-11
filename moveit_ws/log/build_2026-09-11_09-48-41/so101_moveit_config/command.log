@@ -1,0 +1,6 @@
+Invoking command in '/work/moveit_ws/build/so101_moveit_config': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake /work/moveit_ws/src/so101_moveit_config -DCMAKE_INSTALL_PREFIX=/work/moveit_ws/install/so101_moveit_config
+Invoked command in '/work/moveit_ws/build/so101_moveit_config' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake /work/moveit_ws/src/so101_moveit_config -DCMAKE_INSTALL_PREFIX=/work/moveit_ws/install/so101_moveit_config
+Invoking command in '/work/moveit_ws/build/so101_moveit_config': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --build /work/moveit_ws/build/so101_moveit_config -- -j8 -l8
+Invoked command in '/work/moveit_ws/build/so101_moveit_config' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --build /work/moveit_ws/build/so101_moveit_config -- -j8 -l8
+Invoking command in '/work/moveit_ws/build/so101_moveit_config': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --install /work/moveit_ws/build/so101_moveit_config
+Invoked command in '/work/moveit_ws/build/so101_moveit_config' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/jazzy /usr/bin/cmake --install /work/moveit_ws/build/so101_moveit_config
