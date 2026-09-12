@@ -14,6 +14,9 @@
     <xacro:include filename="so101.ros2_control.xacro" />
 
     <xacro:property name="sim" value="$(arg sim)" />
+    <!-- `sim` here is the property from above, which xacro has already coerced
+         to a bool. Comparing it against the string 'true' silently fails.
+         We need to use the property name, not the string value. -->
     <xacro:property name="hardware_plugin"
         value="${'gz_ros2_control/GazeboSimSystem' if sim else 'mock_components/GenericSystem'}" />
 
