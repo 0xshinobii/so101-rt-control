@@ -2,13 +2,44 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="so101">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
 
+    <!-- sim:=true swaps the ros2_control hardware for Gazebo's and adds the
+         simulation-only tags below. Default keeps mock hardware, so every
+         existing MoveIt launch file behaves exactly as before. -->
+    <xacro:arg name="sim" default="false" />
+
     <!-- Import so101 urdf file -->
     <xacro:include filename="$(find so101_description)/urdf/so101.urdf" />
 
     <!-- Import control_xacro -->
     <xacro:include filename="so101.ros2_control.xacro" />
 
+    <xacro:property name="sim" value="$(arg sim)" />
+    <xacro:property name="hardware_plugin"
+        value="${'gz_ros2_control/GazeboSimSystem' if sim else 'mock_components/GenericSystem'}" />
 
-    <xacro:so101_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+    <xacro:so101_ros2_control name="So101System"
+        initial_positions_file="$(arg initial_positions_file)"
+        hardware_plugin="${hardware_plugin}" />
+
+    <xacro:if value="$(arg sim)">
+        <!-- Gazebo needs a real fixed joint to a static link. The SRDF
+             virtual_joint tells MoveIt where the base is but anchors nothing,
+             so without this the arm is a free body and falls on tick one. -->
+        <link name="world" />
+        <joint name="world_joint" type="fixed">
+            <parent link="world" />
+            <child link="base_link" />
+            <origin xyz="0 0 0" rpy="0 0 0" />
+        </joint>
+
+        <!-- Runs controller_manager inside the Gazebo process, so its update
+             loop is driven by simulation time rather than wall clock. -->
+        <gazebo>
+            <plugin filename="libgz_ros2_control-system.so"
+                    name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+                <parameters>$(find so101_moveit_config)/config/ros2_controllers.yaml</parameters>
+            </plugin>
+        </gazebo>
+    </xacro:if>
 
 </robot>
