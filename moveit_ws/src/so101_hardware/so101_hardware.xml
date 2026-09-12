@@ -1,0 +1,9 @@
+<library path="so101_hardware">
+  <class name="so101_hardware/So101System"
+         type="so101_hardware::So101System"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Feetech STS3215 position hardware for the SO-101.
+    </description>
+  </class>
+</library>

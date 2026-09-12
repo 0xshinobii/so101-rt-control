@@ -1,3 +1,11 @@
+If:
+  PathMatch: .*/ros2_ws/src/arm_control/.*
 CompileFlags:
   Add:
     - -I/home/atul/robotics/so101-rt-control/ros2_ws/src/arm_control/include
+
+---
+If:
+  PathMatch: .*/so101_hardware/.*
+CompileFlags:
+  CompilationDatabase: moveit_ws/build/so101_hardware

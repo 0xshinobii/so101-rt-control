@@ -1,11 +1,12 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="so101">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
-
-    <!-- sim:=true swaps the ros2_control hardware for Gazebo's and adds the
-         simulation-only tags below. Default keeps mock hardware, so every
-         existing MoveIt launch file behaves exactly as before. -->
-    <xacro:arg name="sim" default="false" />
+    <xacro:arg name="hardware" default="mock" />
+    <xacro:arg name="device" default="/dev/ttyACM0" />
+    <xacro:arg name="baud" default="1000000" />
+    <xacro:arg name="calib_file" default="so101_follower_calib.json" />
+    <xacro:arg name="torque_limit" default="300" />
+    <xacro:arg name="enable_torque" default="true" />
 
     <!-- Import so101 urdf file -->
     <xacro:include filename="$(find so101_description)/urdf/so101.urdf" />
@@ -13,18 +14,20 @@
     <!-- Import control_xacro -->
     <xacro:include filename="so101.ros2_control.xacro" />
 
-    <xacro:property name="sim" value="$(arg sim)" />
-    <!-- `sim` here is the property from above, which xacro has already coerced
-         to a bool. Comparing it against the string 'true' silently fails.
-         We need to use the property name, not the string value. -->
+    <xacro:property name="hardware" value="$(arg hardware)" />
     <xacro:property name="hardware_plugin"
-        value="${'gz_ros2_control/GazeboSimSystem' if sim else 'mock_components/GenericSystem'}" />
+        value="${'gz_ros2_control/GazeboSimSystem' if hardware == 'gazebo' else ('so101_hardware/So101System' if hardware == 'real' else 'mock_components/GenericSystem')}" />
 
     <xacro:so101_ros2_control name="So101System"
         initial_positions_file="$(arg initial_positions_file)"
-        hardware_plugin="${hardware_plugin}" />
+        hardware_plugin="${hardware_plugin}"
+        device="$(arg device)"
+        baud="$(arg baud)"
+        calib_file="$(arg calib_file)"
+        torque_limit="$(arg torque_limit)"
+        enable_torque="$(arg enable_torque)" />
 
-    <xacro:if value="$(arg sim)">
+    <xacro:if value="${hardware == 'gazebo'}">
         <!-- Gazebo needs a real fixed joint to a static link. The SRDF
              virtual_joint tells MoveIt where the base is but anchors nothing,
              so without this the arm is a free body and falls on tick one. -->

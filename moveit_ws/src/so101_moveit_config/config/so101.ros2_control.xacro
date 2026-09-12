@@ -1,12 +1,18 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:macro name="so101_ros2_control" params="name initial_positions_file hardware_plugin:='mock_components/GenericSystem'">
+    <xacro:macro name="so101_ros2_control" params="name initial_positions_file hardware_plugin:='mock_components/GenericSystem' device:='/dev/ttyACM0' baud:='1000000' calib_file:='so101_follower_calib.json' torque_limit:='300' enable_torque:='true'">
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
         <ros2_control name="${name}" type="system">
             <hardware>
-                <!-- Mock by default; sim passes the Gazebo system instead. -->
                 <plugin>${hardware_plugin}</plugin>
+                <xacro:if value="${hardware_plugin == 'so101_hardware/So101System'}">
+                    <param name="device">${device}</param>
+                    <param name="baud">${baud}</param>
+                    <param name="calib_file">${calib_file}</param>
+                    <param name="torque_limit">${torque_limit}</param>
+                    <param name="enable_torque">${enable_torque}</param>
+                </xacro:if>
             </hardware>
             <joint name="shoulder_pan">
                 <command_interface name="position"/>

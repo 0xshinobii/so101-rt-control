@@ -45,7 +45,7 @@ def generate_launch_description():
             Command([
                 "xacro ",
                 os.path.join(moveit_share, "config", "so101.urdf.xacro"),
-                " sim:=true",
+                " hardware:=gazebo",
             ]),
             value_type=str,
         )

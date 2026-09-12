@@ -24,11 +24,11 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     moveit_share = get_package_share_directory("so101_moveit_config")
 
-    # sim:=true so MoveIt's model matches the one Gazebo spawned, world link
-    # and all. A mismatch here shows up as TF errors rather than a clear failure.
+    # hardware:=gazebo so MoveIt's model matches the one Gazebo spawned, world
+    # link and all. A mismatch here shows up as TF errors rather than a clear failure.
     moveit_config = (
         MoveItConfigsBuilder("so101", package_name="so101_moveit_config")
-        .robot_description(mappings={"sim": "true"})
+        .robot_description(mappings={"hardware": "gazebo"})
         .to_moveit_configs()
     )
 
