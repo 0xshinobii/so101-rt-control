@@ -28,6 +28,26 @@ arm_controller:
       - position
       - velocity
     allow_nonzero_velocity_at_trajectory_end: true
+    constraints:
+      # Extra time after the last waypoint to settle inside the goal window.
+      goal_time: 0.5
+      # Finite-diff velocity is noisy at 50 Hz; 0.0 would fail every hold.
+      stopped_velocity_tolerance: 0.2
+      shoulder_pan:
+        trajectory: 0.1
+        goal: 0.05
+      shoulder_lift:
+        trajectory: 0.1
+        goal: 0.05
+      elbow_flex:
+        trajectory: 0.1
+        goal: 0.05
+      wrist_flex:
+        trajectory: 0.1
+        goal: 0.05
+      wrist_roll:
+        trajectory: 0.1
+        goal: 0.05
 gripper_controller:
   ros__parameters:
     joint: gripper

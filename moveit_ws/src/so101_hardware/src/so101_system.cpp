@@ -157,6 +157,10 @@ hardware_interface::CallbackReturn So101System::on_activate(
     } else {
       disable_torque();
     }
+
+    consecutive_read_failures_ = 0;
+    consecutive_write_failures_ = 0;
+    time_since_good_read_ = 0.0;
   } catch (const std::exception& e) {
     RCLCPP_FATAL(get_logger(), "on_activate failed: %s", e.what());
     if (bus_.is_open()) {
@@ -184,13 +188,25 @@ hardware_interface::CallbackReturn So101System::on_deactivate(
 
 hardware_interface::return_type So101System::read(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& period) {
+  time_since_good_read_ += period.seconds();
+
   if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentPosition, 2, rx_) ||
       rx_.size() < ids_.size() * 2) {
-    RCLCPP_ERROR(get_logger(), "sync_read present position failed");
-    return hardware_interface::return_type::ERROR;
+    if (++consecutive_read_failures_ >= kMaxConsecutiveReadFailures) {
+      const auto& s = bus_.stats();
+      RCLCPP_ERROR(get_logger(),
+                   "sync_read failed %d cycles in a row: timeouts=%lu checksum_errors=%lu",
+                   consecutive_read_failures_, s.timeouts, s.checksum_errors);
+      return hardware_interface::return_type::ERROR;
+    }
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                         "sync_read failed, holding last state (%d in a row)",
+                         consecutive_read_failures_);
+    return hardware_interface::return_type::OK;
   }
+  consecutive_read_failures_ = 0;
 
-  const double dt = period.seconds();
+  const double dt = time_since_good_read_;
   for (std::size_t i = 0; i < ids_.size(); ++i) {
     ticks_[i] = static_cast<int>(rx_[2 * i] | (rx_[2 * i + 1] << 8));
     q_[i] = calib_[i].sign * (ticks_[i] - calib_[i].zero_ticks) * kRadPerTick;
@@ -199,6 +215,7 @@ hardware_interface::return_type So101System::read(
     set_state<double>(pos_state_keys_[i], q_[i]);
     set_state<double>(vel_state_keys_[i], vel);
   }
+  time_since_good_read_ = 0.0;
   return hardware_interface::return_type::OK;
 }
 
@@ -217,9 +234,19 @@ hardware_interface::return_type So101System::write(
     tx_[2 * i + 1] = static_cast<uint8_t>((clamped >> 8) & 0xFF);
   }
   if (!bus_.sync_write(ids_, FeetechBus::kAddrGoalPosition, tx_)) {
-    RCLCPP_ERROR(get_logger(), "sync_write goal position failed");
-    return hardware_interface::return_type::ERROR;
+    if (++consecutive_write_failures_ >= kMaxConsecutiveWriteFailures) {
+      const auto& s = bus_.stats();
+      RCLCPP_ERROR(get_logger(),
+                   "sync_write failed %d cycles in a row: timeouts=%lu checksum_errors=%lu",
+                   consecutive_write_failures_, s.timeouts, s.checksum_errors);
+      return hardware_interface::return_type::ERROR;
+    }
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                         "sync_write failed, holding last goal (%d in a row)",
+                         consecutive_write_failures_);
+    return hardware_interface::return_type::OK;
   }
+  consecutive_write_failures_ = 0;
   return hardware_interface::return_type::OK;
 }
 

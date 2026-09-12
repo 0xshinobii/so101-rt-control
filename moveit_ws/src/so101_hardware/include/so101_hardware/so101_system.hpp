@@ -58,6 +58,19 @@ private:
   std::vector<std::string> pos_state_keys_;
   std::vector<std::string> vel_state_keys_;
   std::vector<std::string> pos_cmd_keys_;
+
+  // A single dropped packet must not take the robot down. Hold last known
+  // state for a few cycles; give up only when we have been blind long enough
+  // to be unsafe. At 50 Hz: 10 cycles = 200 ms, 5 cycles = 100 ms.
+  static constexpr int kMaxConsecutiveReadFailures = 10;
+  static constexpr int kMaxConsecutiveWriteFailures = 5;
+
+  int consecutive_read_failures_ = 0;
+  int consecutive_write_failures_ = 0;
+
+  // Seconds elapsed since the last successful read, so the velocity finite
+  // difference spans the real interval when a cycle was skipped.
+  double time_since_good_read_ = 0.0;
 };
 
 }  // namespace so101_hardware

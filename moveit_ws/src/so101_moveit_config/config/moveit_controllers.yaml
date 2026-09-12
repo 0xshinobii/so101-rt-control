@@ -1,5 +1,10 @@
 # MoveIt uses this configuration for controller management
 
+# Plan then Execute is two clicks; the arm can drift a few degrees between
+# them. 0.05 rad (~3°) is inside servo tracking, outside a real mismatch.
+trajectory_execution:
+  allowed_start_tolerance: 0.05
+
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
 moveit_simple_controller_manager:
