@@ -1,0 +1,16 @@
+start graph at start_point, T{start_point}
+for i = 1 to K
+    q_rand = SAMPLE(p, q_goal) // not completely uniform, q_goal appears with probality p
+    q_near = NEAREST(T, q_rand) // nearest node in the graph from q_rand
+    q_new = STEER(q_near, q_rand, esp) // move q_near towards q_rand with esp step size
+
+    if (!COLLISION_FREE_SEGMENT(q_new, q_near) {
+        T.add(q_new)
+        parent(q_new) = q_near
+
+        if (distance(q_new, q_goal) < threshold) {
+            return PATH(T, q_new)
+        }
+    }
+
+FAIILED_TO_COVERGE
