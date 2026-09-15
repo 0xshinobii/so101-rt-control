@@ -19,12 +19,14 @@
 namespace so101_hardware {
 namespace {
 
+// Monotonic clock in nanoseconds; used for all I/O deadlines.
 int64_t now_ns() {
   timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
 }
 
+// Map a numeric baud rate to the termios speed_t flag (only rates we use).
 speed_t baud_flag(int baud) {
   switch (baud) {
     case 115200:
@@ -40,6 +42,7 @@ speed_t baud_flag(int baud) {
 
 FeetechBus::~FeetechBus() { close(); }
 
+// Release the serial fd if open.
 void FeetechBus::close() {
   if (fd_ >= 0) {
     ::close(fd_);
@@ -47,6 +50,7 @@ void FeetechBus::close() {
   }
 }
 
+// Open the serial device in non-blocking raw mode at the given baud, flush I/O.
 void FeetechBus::open(const std::string& device, int baud) {
   close();
   fd_ = ::open(device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -73,12 +77,14 @@ void FeetechBus::open(const std::string& device, int baud) {
   tcflush(fd_, TCIOFLUSH);
 }
 
+// Protocol checksum: bitwise NOT of the sum of bytes from ID through params.
 uint8_t FeetechBus::checksum(const uint8_t* p, size_t n) {
   unsigned sum = 0;
   for (size_t i = 0; i < n; ++i) sum += p[i];
   return static_cast<uint8_t>(~sum);
 }
 
+// Block with ppoll until fd is ready for |events| (POLLIN/POLLOUT), or deadline.
 bool FeetechBus::wait_ready(short events, int64_t deadline_ns) {
   while (true) {
     const int64_t remaining_ns = deadline_ns - now_ns();
@@ -103,6 +109,7 @@ bool FeetechBus::wait_ready(short events, int64_t deadline_ns) {
   }
 }
 
+// Write all |n| bytes by the deadline, then drain the kernel TX queue.
 bool FeetechBus::tx(const uint8_t* data, size_t n, int64_t deadline_ns) {
   size_t off = 0;
   while (off < n) {
@@ -131,8 +138,8 @@ bool FeetechBus::tx(const uint8_t* data, size_t n, int64_t deadline_ns) {
   return true;
 }
 
-// TIOCOUTQ == 0 means the kernel TTY queue is empty: bytes were handed to
-// the USB stack, not that the UART clocked them onto the wire.
+// Wait until TIOCOUTQ is 0 (kernel TTY queue empty). That means bytes were
+// handed to the USB stack, not that the UART has finished clocking them out.
 bool FeetechBus::drain_until(int64_t deadline_ns) {
   while (true) {
     const int64_t now = now_ns();
@@ -161,6 +168,7 @@ bool FeetechBus::drain_until(int64_t deadline_ns) {
   }
 }
 
+// Read one byte from the serial port before the deadline.
 bool FeetechBus::rx_byte(uint8_t& b, int64_t deadline_ns) {
   while (true) {
     if (!wait_ready(POLLIN, deadline_ns)) return false;
@@ -175,6 +183,8 @@ bool FeetechBus::rx_byte(uint8_t& b, int64_t deadline_ns) {
   }
 }
 
+// Parse one status packet: sync on 0xFF 0xFF, check ID/checksum, copy payload
+// into |data| (up to |data_len|). Returns false on timeout or bad frame.
 bool FeetechBus::rx_status(uint8_t expected_id, uint8_t* data,
                            uint8_t data_len, int64_t deadline_ns) {
   uint8_t b = 0;
@@ -216,6 +226,7 @@ bool FeetechBus::rx_status(uint8_t expected_id, uint8_t* data,
   return true;
 }
 
+// Ping one servo; succeeds if a valid empty status reply arrives in time.
 bool FeetechBus::ping(uint8_t id) {
   uint8_t pkt[6] = {0xFF, 0xFF, id, 2, kInstPing, 0};
   pkt[5] = checksum(pkt + 2, 3);
@@ -225,6 +236,7 @@ bool FeetechBus::ping(uint8_t id) {
          rx_status(id, nullptr, 0, deadline);
 }
 
+// Read |length| bytes starting at control-table |addr| from one servo into |out|.
 bool FeetechBus::read(uint8_t id, uint8_t addr, uint8_t length, uint8_t* out) {
   uint8_t pkt[8] = {0xFF, 0xFF, id, 4, kInstRead, addr, length, 0};
   pkt[7] = checksum(pkt + 2, 5);
@@ -234,6 +246,7 @@ bool FeetechBus::read(uint8_t id, uint8_t addr, uint8_t length, uint8_t* out) {
          rx_status(id, out, length, deadline);
 }
 
+// Write |length| bytes to control-table |addr| on one servo; wait for status ACK.
 bool FeetechBus::write(uint8_t id, uint8_t addr, const uint8_t* data,
                       uint8_t length) {
   std::vector<uint8_t>& pkt = pkt_;
@@ -252,6 +265,8 @@ bool FeetechBus::write(uint8_t id, uint8_t addr, const uint8_t* data,
          rx_status(id, nullptr, 0, deadline);
 }
 
+// Broadcast Sync Read: one request, then one status reply per ID (in order).
+// |out| is packed as id0[length] | id1[length] | ...
 bool FeetechBus::sync_read(const std::vector<uint8_t>& ids, uint8_t addr,
                            uint8_t length, std::vector<uint8_t>& out) {
   out.assign(ids.size() * length, 0);
@@ -277,6 +292,8 @@ bool FeetechBus::sync_read(const std::vector<uint8_t>& ids, uint8_t addr,
   return true;
 }
 
+// Broadcast Sync Write: write the same address on many servos in one packet.
+// |data| is packed as id0[per] | id1[per] | ...; no status replies expected.
 bool FeetechBus::sync_write(const std::vector<uint8_t>& ids, uint8_t addr,
                             const std::vector<uint8_t>& data) {
   if (ids.empty()) return false;
