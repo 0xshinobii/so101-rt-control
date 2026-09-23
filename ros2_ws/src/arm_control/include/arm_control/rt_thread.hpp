@@ -72,6 +72,7 @@ inline RtStatus configure_rt_thread(const RtConfig& cfg) {
   }
 
   if (cfg.cpu_affinity >= 0) {
+#if defined(__linux__)
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(cfg.cpu_affinity, &set);
@@ -80,6 +81,7 @@ inline RtStatus configure_rt_thread(const RtConfig& cfg) {
     } else {
       st.affinity_set = true;
     }
+#endif
   }
 
   if (cfg.suppress_cstates) {
@@ -112,15 +114,26 @@ inline RtStatus configure_rt_thread(const RtConfig& cfg) {
 // slack and inflate Max vs cyclictest.
 inline void sleep_until_monotonic(
     std::chrono::steady_clock::time_point deadline) {
-  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      deadline.time_since_epoch())
-                      .count();
-  timespec ts;
-  ts.tv_sec = static_cast<time_t>(ns / 1000000000);
-  ts.tv_nsec = static_cast<long>(ns % 1000000000);
   while (true) {
+#if defined(__linux__)
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        deadline.time_since_epoch())
+                        .count();
+    timespec ts;
+    ts.tv_sec = static_cast<time_t>(ns / 1000000000);
+    ts.tv_nsec = static_cast<long>(ns % 1000000000);
     const int rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
     if (rc == 0 || rc != EINTR) return;
+#else
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return;
+    const auto rem = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        deadline - now);
+    timespec ts;
+    ts.tv_sec = static_cast<time_t>(rem.count() / 1000000000);
+    ts.tv_nsec = static_cast<long>(rem.count() % 1000000000);
+    if (nanosleep(&ts, nullptr) != 0 && errno != EINTR) return;
+#endif
   }
 }
 

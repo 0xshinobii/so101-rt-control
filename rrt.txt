@@ -1,4 +1,4 @@
-start graph at start_point, T{start_point}
+start tree at start_point, T{start_point}
 for i = 1 to K
     q_rand = SAMPLE(p, q_goal) // not completely uniform, q_goal appears with probality p
     q_near = NEAREST(T, q_rand) // nearest node in the graph from q_rand

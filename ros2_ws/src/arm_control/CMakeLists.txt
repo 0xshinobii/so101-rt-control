@@ -19,6 +19,13 @@ find_package(Eigen3 REQUIRED)
 find_package(Mujoco REQUIRED)
 find_package(pinocchio REQUIRED)
 
+# -------- Testing ------------------------------------------------------------
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(spsc_ring_test tests/spsc_ring_test.cpp)
+  target_include_directories(spsc_ring_test PRIVATE include)
+endif()
+
 # --- Control core: backend + controller + loop (no ROS, no I/O) ---------------
 add_library(arm_core
   src/mujoco_backend.cpp

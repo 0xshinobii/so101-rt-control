@@ -46,3 +46,6 @@ torque_off_so101
 
 # Cursor
 .cursor/implementation-plan.md
+
+# clangd
+.cache/

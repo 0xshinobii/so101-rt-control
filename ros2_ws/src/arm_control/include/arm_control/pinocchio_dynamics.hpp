@@ -5,6 +5,22 @@
 #include <string>
 
 #include <Eigen/Dense>
+
+// Pinocchio JointModelTpl needs a 30-element Boost.MPL list (set before MPL).
+#ifndef BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#define BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS
+#endif
+#ifndef BOOST_MPL_LIMIT_LIST_SIZE
+#define BOOST_MPL_LIMIT_LIST_SIZE 30
+#endif
+#ifndef BOOST_MPL_LIMIT_VECTOR_SIZE
+#define BOOST_MPL_LIMIT_VECTOR_SIZE 30
+#endif
+#ifndef BOOST_FUSION_INVOKE_MAX_ARITY
+#define BOOST_FUSION_INVOKE_MAX_ARITY 12
+#endif
+
+#include <pinocchio/fwd.hpp>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
 

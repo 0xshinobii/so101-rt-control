@@ -383,6 +383,14 @@ torque plant. Four independent failures make that identity false on this bus.
    `q̈ = 61.4 rad/s²`. True hold acceleration is ~0. `q̇` is a position
    difference, not a measured velocity; `q̈` is that difference again.
 
+   Against the moving reference rather than the hold, the same twitch is
+   still an order of magnitude too large. A minimum-jerk profile peaks at
+   `qdd_max = 5.774 · Δq / T²` (at `τ = (3 − √3)/6 ≈ 0.211`); the elbow's
+   `kTarget` travel is 0.80–0.84 rad in `T = 1.0 s`, giving
+   `qdd_max = 4.6–4.9 rad/s²`. One LSB of quantisation noise is therefore
+   `61.4 / qdd_max ≈ 13×` the largest true acceleration anywhere in the
+   trajectory — not just at rest.
+
 3. **Fake inertia swamps gravity in `ID_empty`.** Pinocchio joint armature is
    0.028 N·m·s²/rad, so one LSB of `q̈` injects at least
    `0.028 × 61.4 = 1.72 N·m` of inertia torque on every joint — already
@@ -395,6 +403,9 @@ torque plant. Four independent failures make that identity false on this bus.
    (Phase 5 bias). Hardware raw mass is **−0.175 kg**, about **18×** that
    floor, with Coulomb friction and the inconsistent `(τ, q̈)` pair on top.
    The signed raw value is the diagnostic; the clamp kept control at 0 kg.
+   The STS3215's published reduction is **1:345** (Feetech datasheet).
+   That figure is quoted, not measured here, and the per-unit ratio was
+   not verified — see the `K_servo` discussion above.
 
 Causes 2–3 vanish at rest (`q̇ = q̈ = 0`). Cause 1 does not: overlay `τ` is
 still not motor torque.
