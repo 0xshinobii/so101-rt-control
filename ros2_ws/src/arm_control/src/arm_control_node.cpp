@@ -239,6 +239,77 @@ public:
     return LifecycleNodeInterface::CallbackReturn::SUCCESS;
   }
 
+  LifecycleNodeInterface::CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override {
+    if (control_thread_.joinable()) {
+      RCLCPP_ERROR(get_logger(), "Control thread already running");
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    try {
+      auto result = LifecycleNode::on_activate(state);
+      if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+        return result;
+      }
+      // --- non-RT drain+publish timer on the executor thread ---
+      publish_timer_ = create_wall_timer(20ms, [this]() { drain_and_publish(); });
+      // --- start the control thread (this is the fixed-rate loop) ---
+      running_.store(true, std::memory_order_release);
+      control_thread_ = std::thread([this]() { control_loop(); });
+    } catch (const std::exception& e) {
+      running_.store(false, std::memory_order_release);
+      if (control_thread_.joinable()) {
+        control_thread_.join();
+      }
+      publish_timer_.reset();
+      // deactivate the publishers
+      joint_pub_->on_deactivate();
+      metrics_pub_->on_deactivate();
+
+      RCLCPP_ERROR(get_logger(), "Unexpected error in activation: %s", e.what());
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  // reactivation is implicitly resuming from the last state.
+  LifecycleNodeInterface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override {
+    publish_timer_.reset();
+
+    running_.store(false, std::memory_order_release);
+    if (control_thread_.joinable()) {
+      control_thread_.join();
+    }
+    // discard the ring so that its empty for the next activation
+    arm_control::Sample s;
+    while (ring_.pop(s)) { /* do nothing */ }
+
+    auto result = LifecycleNode::on_deactivate(state);
+    if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+      return result;
+    }
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  LifecycleNodeInterface::CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override {
+    auto result = LifecycleNode::on_cleanup(state);
+    if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+      return result;
+    }
+    loop_.reset();
+    controller_.reset();
+    plant_.reset();
+    target_.clear();
+    target_eigen_.resize(0);
+    q_ref_.resize(0);
+    qdot_ref_.resize(0);
+    qddot_ref_.resize(0);
+    joint_pub_.reset();
+    metrics_pub_.reset();
+    publish_timer_.reset();
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
   ~ArmControlNode() override {
     running_.store(false, std::memory_order_release);
     if (control_thread_.joinable()) control_thread_.join();
@@ -370,7 +441,7 @@ private:
   // RT <-> non-RT handoff.
   arm_control::SpscRing<arm_control::Sample> ring_;
   std::thread control_thread_;
-  std::atomic<bool> running_{true};
+  std::atomic<bool> running_{false};
 
   // ROS side.
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
