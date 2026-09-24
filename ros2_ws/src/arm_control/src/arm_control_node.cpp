@@ -95,6 +95,11 @@ public:
     rt_priority_ = declare_parameter<int>("rt_priority", 80);
     rt_cpu_ = declare_parameter<int>("rt_cpu", -1);
     jitter_samples_ = declare_parameter<int>("jitter_samples", 60000);
+    worker_counters_ = declare_parameter<bool>("worker_counters", false);
+    if (worker_counters_) {
+      declare_parameter<int>("active_workers", 0);
+      declare_parameter<int>("max_workers", 0);
+    }
     jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
@@ -251,8 +256,12 @@ public:
         return result;
       }
       // --- non-RT drain+publish timer on the executor thread ---
-      publish_timer_ = create_wall_timer(20ms, [this]() { drain_and_publish(); });
+      publish_timer_ = create_wall_timer(20ms, [this]() {
+        mirror_worker_counters();
+        drain_and_publish();
+      });
       // --- start the control thread (this is the fixed-rate loop) ---
+      max_workers_.store(0, std::memory_order_relaxed);
       running_.store(true, std::memory_order_release);
       control_thread_ = std::thread([this]() { control_loop(); });
     } catch (const std::exception& e) {
@@ -280,6 +289,7 @@ public:
     if (control_thread_.joinable()) {
       control_thread_.join();
     }
+    mirror_worker_counters();
     // discard the ring so that its empty for the next activation
     arm_control::Sample s;
     while (ring_.pop(s)) { /* do nothing */ }
@@ -318,6 +328,17 @@ public:
 private:
   // Runs on its own thread. Fixed-rate; RT-clean body (no alloc, no rclcpp).
   void control_loop() {
+    const int active = active_workers_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    int seen = max_workers_.load(std::memory_order_relaxed);
+    while (active > seen &&
+           !max_workers_.compare_exchange_weak(
+               seen, active, std::memory_order_relaxed)) {
+    }
+    struct StopWorker {
+      std::atomic<int>& active;
+      ~StopWorker() { active.fetch_sub(1, std::memory_order_acq_rel); }
+    } stop{active_workers_};
+
     if (rt_enable_) {
       arm_control::RtConfig cfg;
       cfg.fifo_priority = rt_priority_;
@@ -418,7 +439,18 @@ private:
     }
     m.arm_rms_error = std::sqrt(sumsq / kArmJoints);
     m.estimated_payload_mass = s.estimated_payload_mass;
+    m.sample_time = s.t;
     metrics_pub_->publish(m);
+  }
+
+  // Executor thread only. The control thread updates the atomics and never
+  // touches rclcpp; tests read the mirrored parameters.
+  void mirror_worker_counters() {
+    if (!worker_counters_) return;
+    set_parameter(rclcpp::Parameter(
+        "active_workers", active_workers_.load(std::memory_order_acquire)));
+    set_parameter(rclcpp::Parameter(
+        "max_workers", max_workers_.load(std::memory_order_relaxed)));
   }
 
   // Control core.
@@ -442,6 +474,9 @@ private:
   arm_control::SpscRing<arm_control::Sample> ring_;
   std::thread control_thread_;
   std::atomic<bool> running_{false};
+  std::atomic<int> active_workers_{0};
+  std::atomic<int> max_workers_{0};
+  bool worker_counters_ = false;
 
   // ROS side.
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
