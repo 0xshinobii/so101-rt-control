@@ -76,7 +76,7 @@ public:
   ArmControlNode() : rclcpp_lifecycle::LifecycleNode("arm_control_node"), ring_(1024) {
     // --- parameters (gains / target / model / rate) ---
     const std::string model_path = declare_parameter<std::string>(
-        "model_path", "models/so101/scene_torque.xml");
+        "model_path", "/work/models/so101/scene_torque.xml");
     const std::string controller_type =
         declare_parameter<std::string>("controller_type", "pd");
     const std::string urdf_path = declare_parameter<std::string>(
@@ -259,8 +259,11 @@ public:
       publish_timer_ = create_wall_timer(20ms, [this]() {
         mirror_worker_counters();
         drain_and_publish();
+        log_dropped_samples();
       });
       // --- start the control thread (this is the fixed-rate loop) ---
+      dropped_count_.store(0, std::memory_order_relaxed);
+      previous_dropped_count_ = 0;
       max_workers_.store(0, std::memory_order_relaxed);
       running_.store(true, std::memory_order_release);
       control_thread_ = std::thread([this]() { control_loop(); });
@@ -288,6 +291,8 @@ public:
     running_.store(false, std::memory_order_release);
     if (control_thread_.joinable()) {
       control_thread_.join();
+      dropped_count_.store(0, std::memory_order_relaxed);
+      previous_dropped_count_ = 0;
     }
     mirror_worker_counters();
     // discard the ring so that its empty for the next activation
@@ -368,7 +373,9 @@ private:
         loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
       }
       loop_->step_once(s);
-      ring_.push(s);  // best-effort; never blocks the control thread
+      if (!ring_.push(s)) {
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
+      }
       next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           period);
       arm_control::sleep_until_monotonic(next);
@@ -443,6 +450,18 @@ private:
     metrics_pub_->publish(m);
   }
 
+  /// Executor thread diagnostics. Logs a warning if the number of dropped samples changes.
+  void log_dropped_samples() {
+    const int dropped = dropped_count_.load(std::memory_order_relaxed);
+    if (dropped == 0) return;
+
+    // log only when a value change is observed
+    if (dropped != previous_dropped_count_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Dropped %d telemetry samples since activation", dropped);
+      previous_dropped_count_ = dropped;
+    }
+  }
+
   // Executor thread only. The control thread updates the atomics and never
   // touches rclcpp; tests read the mirrored parameters.
   void mirror_worker_counters() {
@@ -476,6 +495,8 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<int> active_workers_{0};
   std::atomic<int> max_workers_{0};
+  std::atomic<int> dropped_count_{0};
+  int previous_dropped_count_ = 0;
   bool worker_counters_ = false;
 
   // ROS side.
