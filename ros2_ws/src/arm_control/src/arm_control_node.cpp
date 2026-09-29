@@ -22,6 +22,7 @@
 
 #include <Eigen/Dense>
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
+#include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
@@ -69,8 +70,15 @@ void minimum_jerk_reference(double time, const Eigen::VectorXd& target,
 bool all_finite(const std::vector<double>& v) {
   return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
 }
-}  // namespace
 
+bool validate_gains(const std::vector<double>& v) {
+  const bool is_valid_dimension = v.size() == arm_control::kDof;
+  const bool is_finite = all_finite(v);
+  const bool is_all_non_negative = std::all_of(v.begin(), v.end(), [](double x) { return x >= 0.0; });
+  return is_valid_dimension && is_finite && is_all_non_negative;
+}
+
+}  // namespace
 class ArmControlNode : public rclcpp_lifecycle::LifecycleNode {
 public:
   ArmControlNode() : rclcpp_lifecycle::LifecycleNode("arm_control_node"), ring_(1024) {
@@ -103,8 +111,14 @@ public:
     jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
+    if (!validate_gains(kp)) {
+      throw std::invalid_argument("Invalid kp gains");
+    }
     const auto kd = declare_parameter<std::vector<double>>(
         "kd", {3.0, 3.0, 2.0, 1.0, 0.6, 0.4});
+    if (!validate_gains(kd)) {
+      throw std::invalid_argument("Invalid kd gains");
+    }
     const auto computed_kp = declare_parameter<std::vector<double>>(
         "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
     const auto computed_kd = declare_parameter<std::vector<double>>(
@@ -122,6 +136,9 @@ public:
         declare_parameter<double>("rls_excitation_threshold", 1e-8);
     target_ = declare_parameter<std::vector<double>>(
         "target", {0.6, 0.7, -0.8, 0.5, 0.4, 0.0});
+
+    // register the on-set parameters callback
+    on_set_parameters_callback_ = add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_set_parameters_callback(parameters); });
   }
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
@@ -166,10 +183,7 @@ public:
       const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();
       const std::vector<double> computed_kp = get_parameter("computed_kp").get_value<std::vector<double>>();
       const std::vector<double> computed_kd = get_parameter("computed_kd").get_value<std::vector<double>>();
-      if (kp.size() != arm_control::kDof || kd.size() != arm_control::kDof || computed_kp.size() != arm_control::kDof || computed_kd.size() != arm_control::kDof) {
-        throw std::invalid_argument("Invalid gains size");
-      }
-      if (!all_finite(kp) || !all_finite(kd) || !all_finite(computed_kp) || !all_finite(computed_kd)) {
+      if (!validate_gains(kp) || !validate_gains(kd) || !validate_gains(computed_kp) || !validate_gains(computed_kd)) {
         throw std::invalid_argument("Invalid gains");
       }
 
@@ -325,6 +339,8 @@ public:
     return LifecycleNodeInterface::CallbackReturn::SUCCESS;
   }
 
+  // @todo: add on_shutdown()
+
   ~ArmControlNode() override {
     running_.store(false, std::memory_order_release);
     if (control_thread_.joinable()) control_thread_.join();
@@ -472,6 +488,40 @@ private:
         "max_workers", max_workers_.load(std::memory_order_relaxed)));
   }
 
+  rcl_interfaces::msg::SetParametersResult on_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+    std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+    for (const auto &param : parameters) {
+      if (param.get_name() == "kp" || param.get_name() == "kd") {
+        // kp or kd parameter is only allowed to be set when node is inactive
+        if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+          result.successful = false;
+          result.reason = "Node is not inactive";
+          break;
+        }
+
+        // update the current kp or kd
+        if (param.get_name() == "kp") {
+          current_kp = param.get_value<std::vector<double>>();
+        } else if (param.get_name() == "kd") {
+          current_kd = param.get_value<std::vector<double>>();
+        }
+
+        // validate both kp and kd
+        // return false if dimension is not kdof, not finite values, or not all non-negative
+        if (!validate_gains(current_kp) || !validate_gains(current_kd)) {
+          result.successful = false;
+          result.reason = "Invalid gains";
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
   // Control core.
   std::unique_ptr<arm_control::MujocoBackend> plant_;
   std::unique_ptr<arm_control::Controller> controller_;
@@ -503,6 +553,9 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
   rclcpp_lifecycle::LifecyclePublisher<arm_msgs::msg::ArmMetrics>::SharedPtr metrics_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
+
+  // param updates
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;
 };
 
 int main(int argc, char** argv) {

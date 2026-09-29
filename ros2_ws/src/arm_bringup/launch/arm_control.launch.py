@@ -16,6 +16,6 @@ def generate_launch_description():
             executable="arm_control_node",
             name="arm_control_node",
             output="screen",
-            parameters=[params],
+            parameters=[params, {"worker_counters": True}],
         ),
     ])
