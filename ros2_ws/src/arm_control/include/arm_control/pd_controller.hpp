@@ -21,6 +21,15 @@ public:
 
   void reset() override {}  // stateless (no integral term in the naive PD)
 
+  void set_gains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) {
+    kp_ = kp;
+    kd_ = kd;
+  }
+
+  std::pair<Eigen::VectorXd, Eigen::VectorXd> get_gains() const {
+    return {kp_, kd_};
+  }
+
 private:
   Eigen::VectorXd kp_;
   Eigen::VectorXd kd_;

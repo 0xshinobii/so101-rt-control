@@ -139,6 +139,9 @@ public:
 
     // register the on-set parameters callback
     on_set_parameters_callback_ = add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_set_parameters_callback(parameters); });
+
+    // register the post-set parameters callback
+    post_set_parameters_callback_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_post_set_parameters_callback(parameters); });
   }
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
@@ -262,6 +265,24 @@ public:
     if (control_thread_.joinable()) {
       RCLCPP_ERROR(get_logger(), "Control thread already running");
       return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    // check if current kp and kd are valid if controller is pd
+    const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+    if (controller_type == "pd") {
+      const std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+      const auto* pd = dynamic_cast<arm_control::PdController*>(controller_.get());
+      if (pd == nullptr) {
+        RCLCPP_ERROR(get_logger(),
+                     "Invariant failure: controller_type is pd but controller is not PdController");
+        return LifecycleNodeInterface::CallbackReturn::FAILURE;
+      }
+      const auto controller_gains = pd->get_gains();
+      if (controller_gains.first != to_eigen(current_kp) || controller_gains.second != to_eigen(current_kd)) {
+        RCLCPP_ERROR(get_logger(), "Controller gains have changed since last activation");
+        return LifecycleNodeInterface::CallbackReturn::FAILURE;
+      }
     }
 
     try {
@@ -503,6 +524,14 @@ private:
           break;
         }
 
+        // fail if controller is not pd
+        const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+        if (controller_type != "pd") {
+          result.successful = false;
+          result.reason = "Controller is not pd";
+          break;
+        }
+
         // update the current kp or kd
         if (param.get_name() == "kp") {
           current_kp = param.get_value<std::vector<double>>();
@@ -518,8 +547,37 @@ private:
           break;
         }
       }
+
+      // param controller_type is only allowed to be set when node is unconfigured
+      if (param.get_name() == "controller_type") {
+        if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED) {
+          result.successful = false;
+          result.reason = "Controller type is only allowed to be set when node is unconfigured";
+          break;
+        }
+      }
     }
     return result;
+  }
+
+  void on_post_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
+    for (const auto &param : parameters) {
+      if (param.get_name() != "kp" && param.get_name() != "kd") {
+        continue;
+      }
+      const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+      const std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+      if (controller_type == "pd") {
+        auto* pd = dynamic_cast<arm_control::PdController*>(controller_.get());
+        if (pd == nullptr) {
+          RCLCPP_ERROR(get_logger(),
+                       "Invariant failure: controller_type is pd but controller is not PdController");
+          return;
+        }
+        pd->set_gains(to_eigen(current_kp), to_eigen(current_kd));
+      }
+    }
   }
 
   // Control core.
@@ -556,6 +614,7 @@ private:
 
   // param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr post_set_parameters_callback_;
 };
 
 int main(int argc, char** argv) {
