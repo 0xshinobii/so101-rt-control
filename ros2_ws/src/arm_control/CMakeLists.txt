@@ -24,6 +24,12 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(spsc_ring_test tests/spsc_ring_test.cpp)
   target_include_directories(spsc_ring_test PRIVATE include)
+
+  ament_add_gtest(payload_mass_rls_test
+    tests/payload_mass_rls_test.cpp
+    src/payload_mass_rls.cpp)
+  target_include_directories(payload_mass_rls_test PRIVATE include)
+  target_link_libraries(payload_mass_rls_test Eigen3::Eigen)
 endif()
 
 # --- Control core: backend + controller + loop (no ROS, no I/O) ---------------
@@ -50,17 +56,12 @@ target_link_libraries(arm_core PUBLIC
 
 # Gate controller integration on equivalence of the MuJoCo and Pinocchio
 # rigid-body terms (gravity, mass matrix, and nonlinear bias).
-add_executable(validate_dynamics src/validate_dynamics.cpp)
-target_link_libraries(validate_dynamics arm_core)
-install(TARGETS validate_dynamics DESTINATION lib/${PROJECT_NAME})
-
-add_executable(validate_payload_estimator
-  src/validate_payload_estimator.cpp
-  src/payload_mass_rls.cpp
-)
-target_include_directories(validate_payload_estimator PRIVATE include)
-target_link_libraries(validate_payload_estimator PRIVATE Eigen3::Eigen)
-install(TARGETS validate_payload_estimator DESTINATION lib/${PROJECT_NAME})
+if(BUILD_TESTING)
+  ament_add_gtest(mujoco_pinocchio_dynamics_test tests/mujoco_pinocchio_dynamics_test.cpp)
+  target_link_libraries(mujoco_pinocchio_dynamics_test arm_core)
+  target_compile_definitions(mujoco_pinocchio_dynamics_test PRIVATE
+    "SO101_MODEL_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../../../models/so101\"")
+endif()
 
 add_executable(kservo_from_csv ${CMAKE_CURRENT_SOURCE_DIR}/../../../tools/kservo_from_csv.cpp)
 target_include_directories(kservo_from_csv PRIVATE include)

@@ -1,7 +1,7 @@
 #include <cmath>
-#include <cstdio>
 #include <vector>
 
+#include <gtest/gtest.h>
 #include <Eigen/Dense>
 
 #include "arm_control/arm_types.hpp"
@@ -11,11 +11,6 @@ namespace {
 
 using arm_control::PayloadMassRlsEstimator;
 using arm_control::kDof;
-
-bool expect(bool condition, const char* name) {
-  std::printf("  %s %s\n", condition ? "PASS" : "FAIL", name);
-  return condition;
-}
 
 Eigen::VectorXd synthetic_regressor(double q, double qddot) {
   Eigen::VectorXd phi(kDof);
@@ -28,51 +23,65 @@ Eigen::VectorXd synthetic_regressor(double q, double qddot) {
 
 }  // namespace
 
-int main() {
-  bool ok = true;
+TEST(payload_mass_rls, noiseless_scalar_convergence) {
   PayloadMassRlsEstimator estimator;
   Eigen::VectorXd phi =
       (Eigen::VectorXd(kDof) << 0.2, -0.4, 0.8, 0.3, -0.1, 0.0).finished();
-  Eigen::VectorXd observation = 0.2 * phi;
+  const Eigen::VectorXd observation = 0.2 * phi;
   for (int i = 0; i < 500; ++i) estimator.update(phi, observation);
-  ok &= expect(std::abs(estimator.mass() - 0.2) < 1e-5,
-               "noiseless scalar convergence");
+  EXPECT_NEAR(estimator.mass(), 0.2, 1e-5);
+}
 
+TEST(payload_mass_rls, reset_restores_prior_state) {
+  PayloadMassRlsEstimator estimator;
+  Eigen::VectorXd phi =
+      (Eigen::VectorXd(kDof) << 0.2, -0.4, 0.8, 0.3, -0.1, 0.0).finished();
+  estimator.update(phi, 0.2 * phi);
   estimator.reset();
-  ok &= expect(estimator.mass() == 0.0 &&
-                   estimator.accepted_updates() == 0,
-               "reset restores prior state");
-  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(kDof);
-  ok &= expect(!estimator.update(zero, zero) &&
-                   estimator.rejected_updates() == 1,
-               "low excitation is rejected");
+  EXPECT_EQ(estimator.mass(), 0.0);
+  EXPECT_EQ(estimator.accepted_updates(), 0u);
+}
 
+TEST(payload_mass_rls, low_excitation_is_rejected) {
+  PayloadMassRlsEstimator estimator;
+  const Eigen::VectorXd zero = Eigen::VectorXd::Zero(kDof);
+  EXPECT_FALSE(estimator.update(zero, zero));
+  EXPECT_EQ(estimator.rejected_updates(), 1u);
+}
+
+TEST(payload_mass_rls, mass_projection_preserves_raw_estimate) {
   PayloadMassRlsEstimator::Config bounded_config;
   bounded_config.max_mass = 0.3;
   PayloadMassRlsEstimator bounded(bounded_config);
+  Eigen::VectorXd phi =
+      (Eigen::VectorXd(kDof) << 0.2, -0.4, 0.8, 0.3, -0.1, 0.0).finished();
   bounded.update(phi, 10.0 * phi);
-  ok &= expect(bounded.mass() == 0.3 && bounded.raw_mass() > 0.3,
-               "mass projection preserves raw diagnostic estimate");
+  EXPECT_EQ(bounded.mass(), 0.3);
+  EXPECT_GT(bounded.raw_mass(), 0.3);
+}
 
+TEST(payload_mass_rls, affine_calibration_before_projection) {
   PayloadMassRlsEstimator::Config calibrated_config;
   calibrated_config.raw_mass_scale = 2.0;
   calibrated_config.raw_mass_offset = -0.01;
   PayloadMassRlsEstimator calibrated(calibrated_config);
-  calibrated.set_raw_mass(0.19);
-  ok &= expect(std::abs(calibrated.raw_mass() - 0.19) < 1e-12 &&
-                   std::abs(calibrated.mass() - 0.10) < 1e-12,
-               "affine calibration is applied before projection");
-  calibrated.set_raw_mass(1.19);
-  ok &= expect(calibrated.raw_mass() == 1.19 &&
-                   calibrated.mass() == calibrated_config.max_mass,
-               "calibrated physical mass is projected after correction");
-  calibrated.set_mass(0.20);
-  ok &= expect(calibrated.raw_mass() == 0.20 &&
-                   calibrated.mass() == 0.20,
-               "known physical mass bypasses instrument calibration");
 
-  // Synthetic causal sequence: tau[k-1] is generated from the state at k-1
-  // and the acceleration inferred from qdot[k] - qdot[k-1]. A deliberately
+  calibrated.set_raw_mass(0.19);
+  EXPECT_NEAR(calibrated.raw_mass(), 0.19, 1e-12);
+  EXPECT_NEAR(calibrated.mass(), 0.10, 1e-12);
+
+  calibrated.set_raw_mass(1.19);
+  EXPECT_EQ(calibrated.raw_mass(), 1.19);
+  EXPECT_EQ(calibrated.mass(), calibrated_config.max_mass);
+
+  calibrated.set_mass(0.20);
+  EXPECT_EQ(calibrated.raw_mass(), 0.20);
+  EXPECT_EQ(calibrated.mass(), 0.20);
+}
+
+TEST(payload_mass_rls, torque_acceleration_alignment) {
+  // Synthetic causal sequence: tau[k] is generated from the state at k
+  // and the acceleration inferred from qdot[k+1] - qdot[k]. A deliberately
   // shifted regressor must not recover the same mass.
   constexpr double dt = 0.005;
   constexpr double true_mass = 0.17;
@@ -106,11 +115,7 @@ int main() {
   }
   const double aligned_error = std::abs(aligned.mass() - true_mass);
   const double shifted_error = std::abs(shifted.mass() - true_mass);
-  ok &= expect(aligned_error < 1e-6, "k-1 torque/acceleration alignment");
-  ok &= expect(shifted_error > 10.0 * aligned_error &&
-                   shifted_error > 1e-4,
-               "intentional off-by-one sequence is detectably biased");
-
-  std::printf("\nPAYLOAD ESTIMATOR VALIDATION: %s\n", ok ? "PASS" : "FAIL");
-  return ok ? 0 : 1;
+  EXPECT_LT(aligned_error, 1e-6);
+  EXPECT_GT(shifted_error, 10.0 * aligned_error);
+  EXPECT_GT(shifted_error, 1e-4);
 }

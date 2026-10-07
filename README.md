@@ -501,7 +501,6 @@ Standalone benches:
 ```bash
 ros2 run arm_control rt_jitter_bench      # PREEMPT_RT wakeup jitter
 ros2 run arm_control bus_timing           # sync_read / sync_write RTT
-ros2 run arm_control validate_dynamics    # MuJoCo vs Pinocchio equivalence gate
 ros2 run arm_control gravity_id           # static Present_Current mass ID
 ```
 
@@ -533,11 +532,12 @@ ros2_ws/src/
       arm_control_node.cpp    ROS 2 wrapper; control thread never touches rclcpp
       hardware_run.cpp        hardware tracking, in-run mass ID, logging
       gravity_id.cpp          static Present_Current mass ID
-      validate_dynamics.cpp   blocking rigid-body equivalence gate
-      validate_payload_estimator.cpp   deterministic RLS validator
       rt_jitter_bench.cpp     wakeup-jitter measurement
       bus_timing.cpp          bus RTT measurement
       calibrate_so101.cpp     per-joint sign + home offset, checked against FK
+    tests/
+      mujoco_pinocchio_dynamics_test.cpp   MuJoCo vs Pinocchio equivalence gate
+      payload_mass_rls_test.cpp   deterministic RLS validator
   arm_bringup/          launch + params.yaml
   arm_msgs/             ArmMetrics
 

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -71,6 +72,24 @@ bool all_finite(const std::vector<double>& v) {
   return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
 }
 
+// Params are repo-root relative (models/so101/...). Tests and launches start
+// from other directories, so walk parents until the file is found.
+std::string resolve_repo_path(const std::string& path) {
+  const std::filesystem::path given(path);
+  if (given.is_absolute()) return path;
+  std::filesystem::path dir = std::filesystem::current_path();
+  for (;;) {
+    const std::filesystem::path candidate = dir / given;
+    if (std::filesystem::exists(candidate)) {
+      return std::filesystem::canonical(candidate).string();
+    }
+    const std::filesystem::path parent = dir.parent_path();
+    if (parent == dir) break;
+    dir = parent;
+  }
+  return path;
+}
+
 bool validate_gains(const std::vector<double>& v) {
   const bool is_valid_dimension = v.size() == arm_control::kDof;
   const bool is_finite = all_finite(v);
@@ -84,7 +103,7 @@ public:
   ArmControlNode() : rclcpp_lifecycle::LifecycleNode("arm_control_node"), ring_(1024) {
     // --- parameters (gains / target / model / rate) ---
     const std::string model_path = declare_parameter<std::string>(
-        "model_path", "/work/models/so101/scene_torque.xml");
+        "model_path", "models/so101/scene_torque.xml");
     const std::string controller_type =
         declare_parameter<std::string>("controller_type", "pd");
     const std::string urdf_path = declare_parameter<std::string>(
@@ -171,7 +190,8 @@ public:
       std::string jitter_csv = get_parameter("jitter_csv").get_value<std::string>();
 
       // --- build the control core ---
-      const std::string model_path = get_parameter("model_path").get_value<std::string>();
+      const std::string model_path = resolve_repo_path(
+          get_parameter("model_path").get_value<std::string>());
       auto plant = std::make_unique<arm_control::MujocoBackend>(model_path);
 
       const double plant_payload_mass = get_parameter("plant_payload_mass").get_value<double>();
@@ -179,8 +199,10 @@ public:
         plant->set_body_mass("known_payload", plant_payload_mass);
       }
 
-      const std::string urdf_path = get_parameter("urdf_path").get_value<std::string>();
-      const std::string payload_urdf_path = get_parameter("payload_urdf_path").get_value<std::string>();
+      const std::string urdf_path = resolve_repo_path(
+          get_parameter("urdf_path").get_value<std::string>());
+      const std::string payload_urdf_path = resolve_repo_path(
+          get_parameter("payload_urdf_path").get_value<std::string>());
 
       const std::vector<double> kp = get_parameter("kp").get_value<std::vector<double>>();
       const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();

@@ -1,9 +1,9 @@
 arm_control_node:
   ros__parameters:
-    # Path is resolved inside the container (repo bind-mounted at /work).
-    model_path: "/work/models/so101/scene_torque.xml"
-    urdf_path: "/work/models/so101/so101_dynamics.urdf"
-    payload_urdf_path: "/work/models/so101/so101_dynamics_payload.urdf"
+    # Repo-root relative. The node walks up from its working directory to find them.
+    model_path: "models/so101/scene_torque.xml"
+    urdf_path: "models/so101/so101_dynamics.urdf"
+    payload_urdf_path: "models/so101/so101_dynamics_payload.urdf"
     reference_payload_mass: 0.20
     # Negative leaves the MJCF payload mass unchanged.
     plant_payload_mass: -1.0

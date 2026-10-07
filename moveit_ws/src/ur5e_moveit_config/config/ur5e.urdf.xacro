@@ -3,7 +3,7 @@
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
 
     <!-- Import ur5e urdf file -->
-    <xacro:include filename="/work/moveit_ws/ur5e.urdf" />
+    <xacro:include filename="moveit_ws/ur5e.urdf" />
 
     <!-- Import control_xacro -->
     <xacro:include filename="ur5e.ros2_control.xacro" />
