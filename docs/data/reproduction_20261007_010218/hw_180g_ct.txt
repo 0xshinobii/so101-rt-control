@@ -1,0 +1,7 @@
+gripper hold q=-0.241 rad  tick=1758  torque_limit=200 (min_ticks)
+hardware  controller=computed_torque  payload=180 g (physical)  K=(50,90,11,50,50,50)
+hold 180 g in the jaws — squeeze, home, then 4 s min-jerk
+home q=(0.008,0.101,0.009,0.040,0.029,-0.078)
+rt  mlockall=1 fifo=1 affinity=0 cstates=1
+wrote /home/atul/robotics/so101-rt-control/docs/data/reproduction_20261007_010218/final_hw_180g_02_ct_empty.csv  final q=(0.594,0.715,-0.772,0.497,0.374,-0.078) ee=(0.3795,-0.2257,0.1386)
+run health  stale_reads=0  failed_writes=0  tick_clamps=0  lead_saturations=0  late_ticks=0 (max 0.0 us)  bus_timeouts=0  checksum_errors=0

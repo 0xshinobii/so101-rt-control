@@ -1,0 +1,8 @@
+Starting >>> arm_msgs
+Finished <<< arm_msgs [1.94s]
+Starting >>> arm_control
+Finished <<< arm_control [2.24s]
+Starting >>> arm_bringup
+Finished <<< arm_bringup [0.40s]
+
+Summary: 3 packages finished [4.74s]

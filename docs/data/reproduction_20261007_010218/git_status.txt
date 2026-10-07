@@ -1,0 +1,7 @@
+ M ../.clangd
+ M ../moveit_ws/src/ur5e_moveit_config/config/ur5e.urdf.xacro
+ M src/arm_bringup/config/params.yaml
+ M src/arm_control/src/arm_control_node.cpp
+?? ../docs/data/reproduction_20261007_010218/
+?? ../impl_plan.md
+?? docs/

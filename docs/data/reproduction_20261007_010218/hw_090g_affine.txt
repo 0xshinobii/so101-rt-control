@@ -1,0 +1,14 @@
+gripper hold q=-0.241 rad  tick=1758  torque_limit=200 (min_ticks)
+hardware  controller=adaptive_computed_torque  payload=90 g (physical)  K=(50,90,11,50,50,50)
+hold 90 g in the jaws — squeeze, home, then 4 s min-jerk
+static-gravity  kt=-12.522 N.m/A  1-pose two-way ID this run, then freeze
+mass calibration  physical=(raw+0.01229)/2.31501, then clamp [0,0.5]
+home q=(0.008,0.080,0.005,0.026,0.029,-0.172)
+1-pose static ID (two-way current at kTarget) — ~8 s
+id  q=(0.597,0.755,-0.779,0.499,0.373)  tau=(-1.808,-0.705,-0.102)  m=0.1847 kg
+id  jaw q -0.1718 -> -0.1718 rad  drift +0.0000 (0.0 LSB)
+this-run LS raw_mass=0.1847 kg  calibrated=0.0851 kg  (frozen)
+rt  mlockall=1 fifo=1 affinity=0 cstates=1
+wrote /home/atul/robotics/so101-rt-control/docs/data/reproduction_20261007_010218/final_hw_090g_04_adapt_affine_static.csv  final q=(0.594,0.701,-0.808,0.495,0.373,-0.172) ee=(0.3803,-0.2263,0.1545)
+run health  stale_reads=0  failed_writes=0  tick_clamps=0  lead_saturations=0  late_ticks=0 (max 0.0 us)  bus_timeouts=0  checksum_errors=0
+mass raw=0.1847 kg  compensated=0.0851 kg  estimator updates=0
