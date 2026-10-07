@@ -1,0 +1,13 @@
+ping id=1 ok
+ping id=2 ok
+ping id=3 ok
+ping id=4 ok
+ping id=5 ok
+ping id=6 ok
+checksum_errors=0 timeouts=0 rx=12000 tx=4000
+packet_loss_frac=0.000000  (timeouts+checksum)/loops
+sync_read n=2000 Min: 1510.9 Avg: 2200.5 p99: 2393.1 p99.9: 2448.2 Max: 2498.3  (us)
+sync_write n=2000 Min: 85.5 Avg: 156.3 p99: 271.4 p99.9: 300.2 Max: 343.9  (us)
+suggested f_hw <= 326.8 Hz  (0.8 / p99.9_read)
+suggested bus_timeout_ns = 7344734  (3 * p99.9_read)
+wrote /home/atul/robotics/so101-rt-control/docs/data/reproduction_20261007_010218/bus_timing.csv

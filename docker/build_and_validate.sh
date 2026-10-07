@@ -30,13 +30,12 @@ docker run --rm -v "${REPO_ROOT}:/work" -w /work "${IMAGE}" bash -lc '
   colcon build --cmake-args -DMUJOCO_DIR=/opt/mujoco
   source install/setup.bash
   runner=./install/arm_control/lib/arm_control/main_headless
-  gate=./install/arm_control/lib/arm_control/validate_dynamics
 
   echo "== [3/8] rigid-body equivalence gates =="
-  $gate /work/models/so101/scene_torque.xml \
-      /work/models/so101/so101_dynamics.urdf
-  $gate /work/models/so101/scene_torque_payload.xml \
-      /work/models/so101/so101_dynamics_payload.urdf
+  colcon test --packages-select arm_control \
+      --return-code-on-test-failure \
+      --event-handlers console_direct+ \
+      --ctest-args -R mujoco_pinocchio_dynamics_test -V
 
   echo "== [4/8] Phase 2 regression =="
   $runner \
@@ -67,7 +66,10 @@ docker run --rm -v "${REPO_ROOT}:/work" -w /work "${IMAGE}" bash -lc '
       --oracle /work/oracle_baseline_so101.csv
 
   echo "== [7/8] Phase 5 estimator + unknown-payload matrix =="
-  ./install/arm_control/lib/arm_control/validate_payload_estimator
+  colcon test --packages-select arm_control \
+      --return-code-on-test-failure \
+      --event-handlers console_direct+ \
+      --ctest-args -R payload_mass_rls_test --output-on-failure
   $runner /work/models/so101/scene_torque.xml \
       /work/cpp_adaptive_empty_so101.csv \
       --controller adaptive_computed_torque --reference smooth \

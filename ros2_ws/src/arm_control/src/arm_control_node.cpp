@@ -5,20 +5,25 @@
 // -- exactly the isolation Phase 3's RT thread needs.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#include "rclcpp_lifecycle/lifecycle_publisher.hpp"
 #endif
 #include <atomic>
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include <cmath>
 
 #include <Eigen/Dense>
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
+#include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
@@ -62,11 +67,40 @@ void minimum_jerk_reference(double time, const Eigen::VectorXd& target,
   qddot = (60.0 * s - 180.0 * s2 + 120.0 * s3) * target /
           (kReferenceDuration * kReferenceDuration);
 }
-}  // namespace
 
-class ArmControlNode : public rclcpp::Node {
+bool all_finite(const std::vector<double>& v) {
+  return std::all_of(v.begin(), v.end(), [](double x) { return std::isfinite(x); });
+}
+
+// Params are repo-root relative (models/so101/...). Tests and launches start
+// from other directories, so walk parents until the file is found.
+std::string resolve_repo_path(const std::string& path) {
+  const std::filesystem::path given(path);
+  if (given.is_absolute()) return path;
+  std::filesystem::path dir = std::filesystem::current_path();
+  for (;;) {
+    const std::filesystem::path candidate = dir / given;
+    if (std::filesystem::exists(candidate)) {
+      return std::filesystem::canonical(candidate).string();
+    }
+    const std::filesystem::path parent = dir.parent_path();
+    if (parent == dir) break;
+    dir = parent;
+  }
+  return path;
+}
+
+bool validate_gains(const std::vector<double>& v) {
+  const bool is_valid_dimension = v.size() == arm_control::kDof;
+  const bool is_finite = all_finite(v);
+  const bool is_all_non_negative = std::all_of(v.begin(), v.end(), [](double x) { return x >= 0.0; });
+  return is_valid_dimension && is_finite && is_all_non_negative;
+}
+
+}  // namespace
+class ArmControlNode : public rclcpp_lifecycle::LifecycleNode {
 public:
-  ArmControlNode() : rclcpp::Node("arm_control_node"), ring_(1024) {
+  ArmControlNode() : rclcpp_lifecycle::LifecycleNode("arm_control_node"), ring_(1024) {
     // --- parameters (gains / target / model / rate) ---
     const std::string model_path = declare_parameter<std::string>(
         "model_path", "models/so101/scene_torque.xml");
@@ -88,11 +122,22 @@ public:
     rt_priority_ = declare_parameter<int>("rt_priority", 80);
     rt_cpu_ = declare_parameter<int>("rt_cpu", -1);
     jitter_samples_ = declare_parameter<int>("jitter_samples", 60000);
+    worker_counters_ = declare_parameter<bool>("worker_counters", false);
+    if (worker_counters_) {
+      declare_parameter<int>("active_workers", 0);
+      declare_parameter<int>("max_workers", 0);
+    }
     jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
+    if (!validate_gains(kp)) {
+      throw std::invalid_argument("Invalid kp gains");
+    }
     const auto kd = declare_parameter<std::vector<double>>(
         "kd", {3.0, 3.0, 2.0, 1.0, 0.6, 0.4});
+    if (!validate_gains(kd)) {
+      throw std::invalid_argument("Invalid kd gains");
+    }
     const auto computed_kp = declare_parameter<std::vector<double>>(
         "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
     const auto computed_kd = declare_parameter<std::vector<double>>(
@@ -110,54 +155,234 @@ public:
         declare_parameter<double>("rls_excitation_threshold", 1e-8);
     target_ = declare_parameter<std::vector<double>>(
         "target", {0.6, 0.7, -0.8, 0.5, 0.4, 0.0});
-    if (reference_type_ != "step" && reference_type_ != "smooth") {
-      throw std::invalid_argument("reference_type must be step or smooth");
-    }
-    target_eigen_ = to_eigen(target_);
-    q_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
-    qdot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
-    qddot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
 
-    // --- build the control core ---
-    plant_ = std::make_unique<arm_control::MujocoBackend>(model_path);
-    if (plant_payload_mass >= 0.0) {
-      plant_->set_body_mass("known_payload", plant_payload_mass);
-    }
-    if (controller_type == "pd") {
-      controller_ =
-          std::make_unique<arm_control::PdController>(to_eigen(kp), to_eigen(kd));
-    } else if (controller_type == "computed_torque") {
-      controller_ = std::make_unique<arm_control::ComputedTorqueController>(
-          urdf_path, to_eigen(computed_kp), to_eigen(computed_kd));
-    } else if (controller_type == "adaptive_computed_torque") {
-      controller_ =
-          std::make_unique<arm_control::AdaptiveComputedTorqueController>(
-              urdf_path, payload_urdf_path, reference_payload_mass,
-              to_eigen(computed_kp), to_eigen(computed_kd),
-              plant_->timestep(), estimator_config);
-    } else {
-      throw std::invalid_argument(
-          "controller_type must be pd, computed_torque, or "
-          "adaptive_computed_torque");
-    }
-    loop_ = std::make_unique<arm_control::ControlLoop>(*plant_, *controller_,
-                                                       target_eigen_);
-    loop_->reset();
+    // register the on-set parameters callback
+    on_set_parameters_callback_ = add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_set_parameters_callback(parameters); });
 
-    // --- publishers (non-RT side) ---
-    joint_pub_ = create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
-    metrics_pub_ = create_publisher<arm_msgs::msg::ArmMetrics>("arm_metrics", 10);
-
-    // --- non-RT drain+publish timer on the executor thread ---
-    publish_timer_ = create_wall_timer(20ms, [this]() { drain_and_publish(); });
-
-    // --- start the control thread (this is the fixed-rate loop) ---
-    control_thread_ = std::thread([this]() { control_loop(); });
-
-    RCLCPP_INFO(get_logger(),
-                "arm_control_node up: model=%s controller=%s rate=%.0f Hz",
-                model_path.c_str(), controller_type.c_str(), rate_hz_);
+    // register the post-set parameters callback
+    post_set_parameters_callback_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_post_set_parameters_callback(parameters); });
   }
+
+  LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
+    try {
+      const double rate_hz = get_parameter("rate_hz").get_value<double>();
+      if (!std::isfinite(rate_hz) || rate_hz <= 0.0) {
+        throw std::invalid_argument("Invalid rate: " + std::to_string(rate_hz));
+      }
+
+      const std::string reference_type = get_parameter("reference_type").get_value<std::string>();
+      if (reference_type != "step" && reference_type != "smooth") {
+        throw std::invalid_argument("Invalid reference type: " + reference_type);
+      }
+
+      std::vector<double> target = get_parameter("target").get_value<std::vector<double>>();
+      if (target.size() != arm_control::kDof) {
+        throw std::invalid_argument("Invalid target size: " + std::to_string(target.size()));
+      }
+      if (!all_finite(target)) {
+        throw std::invalid_argument("Invalid target values");
+      }
+
+      bool rt_enable = get_parameter("rt_enable").get_value<bool>();
+      int rt_priority = get_parameter("rt_priority").get_value<int>();
+      int rt_cpu = get_parameter("rt_cpu").get_value<int>();
+      int jitter_samples = get_parameter("jitter_samples").get_value<int>();
+      std::string jitter_csv = get_parameter("jitter_csv").get_value<std::string>();
+
+      // --- build the control core ---
+      const std::string model_path = resolve_repo_path(
+          get_parameter("model_path").get_value<std::string>());
+      auto plant = std::make_unique<arm_control::MujocoBackend>(model_path);
+
+      const double plant_payload_mass = get_parameter("plant_payload_mass").get_value<double>();
+      if (plant_payload_mass >= 0.0) {
+        plant->set_body_mass("known_payload", plant_payload_mass);
+      }
+
+      const std::string urdf_path = resolve_repo_path(
+          get_parameter("urdf_path").get_value<std::string>());
+      const std::string payload_urdf_path = resolve_repo_path(
+          get_parameter("payload_urdf_path").get_value<std::string>());
+
+      const std::vector<double> kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();
+      const std::vector<double> computed_kp = get_parameter("computed_kp").get_value<std::vector<double>>();
+      const std::vector<double> computed_kd = get_parameter("computed_kd").get_value<std::vector<double>>();
+      if (!validate_gains(kp) || !validate_gains(kd) || !validate_gains(computed_kp) || !validate_gains(computed_kd)) {
+        throw std::invalid_argument("Invalid gains");
+      }
+
+      const double reference_payload_mass = get_parameter("reference_payload_mass").get_value<double>();
+      arm_control::PayloadMassRlsEstimator::Config estimator_config;
+      estimator_config.initial_mass = get_parameter("rls_initial_mass").get_value<double>();
+      estimator_config.initial_covariance = get_parameter("rls_initial_covariance").get_value<double>();
+      estimator_config.forgetting_factor = get_parameter("rls_forgetting_factor").get_value<double>();
+      estimator_config.max_mass = get_parameter("rls_max_mass").get_value<double>();
+      estimator_config.excitation_threshold = get_parameter("rls_excitation_threshold").get_value<double>();
+
+      const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+      if (controller_type != "pd" && controller_type != "computed_torque" && controller_type != "adaptive_computed_torque") {
+        throw std::invalid_argument("Invalid controller type: " + controller_type);
+      }
+
+      std::unique_ptr<arm_control::Controller> controller;
+      if (controller_type == "pd") {
+        controller =
+            std::make_unique<arm_control::PdController>(to_eigen(kp), to_eigen(kd));
+      } else if (controller_type == "computed_torque") {
+        controller = std::make_unique<arm_control::ComputedTorqueController>(
+            urdf_path, to_eigen(computed_kp), to_eigen(computed_kd));
+      } else if (controller_type == "adaptive_computed_torque") {
+        controller =
+            std::make_unique<arm_control::AdaptiveComputedTorqueController>(
+                urdf_path, payload_urdf_path, reference_payload_mass,
+                to_eigen(computed_kp), to_eigen(computed_kd),
+                plant->timestep(), estimator_config);
+      }
+
+      Eigen::VectorXd target_eigen = to_eigen(target);
+      auto loop = std::make_unique<arm_control::ControlLoop>(*plant, *controller, target_eigen);
+      loop->reset();
+
+      // --- publishers (non-RT side) ---
+      auto joint_pub = create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
+      auto metrics_pub = create_publisher<arm_msgs::msg::ArmMetrics>("arm_metrics", 10);
+
+      rt_enable_ = rt_enable;
+      rt_priority_ = rt_priority;
+      rt_cpu_ = rt_cpu;
+      jitter_samples_ = jitter_samples;
+      jitter_csv_ = std::move(jitter_csv);
+
+      target_ = std::move(target);
+      target_eigen_ = std::move(target_eigen);
+      q_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
+      qdot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
+      qddot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
+
+      rate_hz_ = rate_hz;
+      reference_type_ = reference_type;
+      plant_ = std::move(plant);
+      controller_ = std::move(controller);
+      loop_ = std::move(loop);
+
+      joint_pub_ = std::move(joint_pub);
+      metrics_pub_ = std::move(metrics_pub);
+
+      RCLCPP_INFO(get_logger(),
+                  "arm_control_node configured: model=%s controller=%s rate=%.0f Hz",
+                  model_path.c_str(), controller_type.c_str(), rate_hz_);
+    } catch (const std::invalid_argument& e) {
+      RCLCPP_ERROR(get_logger(), "Configuration error: %s", e.what());
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "Unexpected error in configuration: %s", e.what());
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  LifecycleNodeInterface::CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override {
+    if (control_thread_.joinable()) {
+      RCLCPP_ERROR(get_logger(), "Control thread already running");
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    // check if current kp and kd are valid if controller is pd
+    const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+    if (controller_type == "pd") {
+      const std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+      const auto* pd = dynamic_cast<arm_control::PdController*>(controller_.get());
+      if (pd == nullptr) {
+        RCLCPP_ERROR(get_logger(),
+                     "Invariant failure: controller_type is pd but controller is not PdController");
+        return LifecycleNodeInterface::CallbackReturn::FAILURE;
+      }
+      const auto controller_gains = pd->get_gains();
+      if (controller_gains.first != to_eigen(current_kp) || controller_gains.second != to_eigen(current_kd)) {
+        RCLCPP_ERROR(get_logger(), "Controller gains have changed since last activation");
+        return LifecycleNodeInterface::CallbackReturn::FAILURE;
+      }
+    }
+
+    try {
+      auto result = LifecycleNode::on_activate(state);
+      if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+        return result;
+      }
+      // --- non-RT drain+publish timer on the executor thread ---
+      publish_timer_ = create_wall_timer(20ms, [this]() {
+        mirror_worker_counters();
+        drain_and_publish();
+        log_dropped_samples();
+      });
+      // --- start the control thread (this is the fixed-rate loop) ---
+      dropped_count_.store(0, std::memory_order_relaxed);
+      previous_dropped_count_ = 0;
+      max_workers_.store(0, std::memory_order_relaxed);
+      running_.store(true, std::memory_order_release);
+      control_thread_ = std::thread([this]() { control_loop(); });
+    } catch (const std::exception& e) {
+      running_.store(false, std::memory_order_release);
+      if (control_thread_.joinable()) {
+        control_thread_.join();
+      }
+      publish_timer_.reset();
+      // deactivate the publishers
+      joint_pub_->on_deactivate();
+      metrics_pub_->on_deactivate();
+
+      RCLCPP_ERROR(get_logger(), "Unexpected error in activation: %s", e.what());
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
+
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  // reactivation is implicitly resuming from the last state.
+  LifecycleNodeInterface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override {
+    publish_timer_.reset();
+
+    running_.store(false, std::memory_order_release);
+    if (control_thread_.joinable()) {
+      control_thread_.join();
+      dropped_count_.store(0, std::memory_order_relaxed);
+      previous_dropped_count_ = 0;
+    }
+    mirror_worker_counters();
+    // discard the ring so that its empty for the next activation
+    arm_control::Sample s;
+    while (ring_.pop(s)) { /* do nothing */ }
+
+    auto result = LifecycleNode::on_deactivate(state);
+    if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+      return result;
+    }
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  LifecycleNodeInterface::CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override {
+    auto result = LifecycleNode::on_cleanup(state);
+    if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
+      return result;
+    }
+    loop_.reset();
+    controller_.reset();
+    plant_.reset();
+    target_.clear();
+    target_eigen_.resize(0);
+    q_ref_.resize(0);
+    qdot_ref_.resize(0);
+    qddot_ref_.resize(0);
+    joint_pub_.reset();
+    metrics_pub_.reset();
+    publish_timer_.reset();
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  // @todo: add on_shutdown()
 
   ~ArmControlNode() override {
     running_.store(false, std::memory_order_release);
@@ -167,6 +392,17 @@ public:
 private:
   // Runs on its own thread. Fixed-rate; RT-clean body (no alloc, no rclcpp).
   void control_loop() {
+    const int active = active_workers_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    int seen = max_workers_.load(std::memory_order_relaxed);
+    while (active > seen &&
+           !max_workers_.compare_exchange_weak(
+               seen, active, std::memory_order_relaxed)) {
+    }
+    struct StopWorker {
+      std::atomic<int>& active;
+      ~StopWorker() { active.fetch_sub(1, std::memory_order_acq_rel); }
+    } stop{active_workers_};
+
     if (rt_enable_) {
       arm_control::RtConfig cfg;
       cfg.fifo_priority = rt_priority_;
@@ -196,7 +432,9 @@ private:
         loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
       }
       loop_->step_once(s);
-      ring_.push(s);  // best-effort; never blocks the control thread
+      if (!ring_.push(s)) {
+        dropped_count_.fetch_add(1, std::memory_order_relaxed);
+      }
       next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           period);
       arm_control::sleep_until_monotonic(next);
@@ -267,7 +505,101 @@ private:
     }
     m.arm_rms_error = std::sqrt(sumsq / kArmJoints);
     m.estimated_payload_mass = s.estimated_payload_mass;
+    m.sample_time = s.t;
     metrics_pub_->publish(m);
+  }
+
+  /// Executor thread diagnostics. Logs a warning if the number of dropped samples changes.
+  void log_dropped_samples() {
+    const int dropped = dropped_count_.load(std::memory_order_relaxed);
+    if (dropped == 0) return;
+
+    // log only when a value change is observed
+    if (dropped != previous_dropped_count_) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Dropped %d telemetry samples since activation", dropped);
+      previous_dropped_count_ = dropped;
+    }
+  }
+
+  // Executor thread only. The control thread updates the atomics and never
+  // touches rclcpp; tests read the mirrored parameters.
+  void mirror_worker_counters() {
+    if (!worker_counters_) return;
+    set_parameter(rclcpp::Parameter(
+        "active_workers", active_workers_.load(std::memory_order_acquire)));
+    set_parameter(rclcpp::Parameter(
+        "max_workers", max_workers_.load(std::memory_order_relaxed)));
+  }
+
+  rcl_interfaces::msg::SetParametersResult on_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+    std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+    for (const auto &param : parameters) {
+      if (param.get_name() == "kp" || param.get_name() == "kd") {
+        // kp or kd parameter is only allowed to be set when node is inactive
+        if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+          result.successful = false;
+          result.reason = "Node is not inactive";
+          break;
+        }
+
+        // fail if controller is not pd
+        const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+        if (controller_type != "pd") {
+          result.successful = false;
+          result.reason = "Controller is not pd";
+          break;
+        }
+
+        // update the current kp or kd
+        if (param.get_name() == "kp") {
+          current_kp = param.get_value<std::vector<double>>();
+        } else if (param.get_name() == "kd") {
+          current_kd = param.get_value<std::vector<double>>();
+        }
+
+        // validate both kp and kd
+        // return false if dimension is not kdof, not finite values, or not all non-negative
+        if (!validate_gains(current_kp) || !validate_gains(current_kd)) {
+          result.successful = false;
+          result.reason = "Invalid gains";
+          break;
+        }
+      }
+
+      // param controller_type is only allowed to be set when node is unconfigured
+      if (param.get_name() == "controller_type") {
+        if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED) {
+          result.successful = false;
+          result.reason = "Controller type is only allowed to be set when node is unconfigured";
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
+  void on_post_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
+    for (const auto &param : parameters) {
+      if (param.get_name() != "kp" && param.get_name() != "kd") {
+        continue;
+      }
+      const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+      const std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
+      if (controller_type == "pd") {
+        auto* pd = dynamic_cast<arm_control::PdController*>(controller_.get());
+        if (pd == nullptr) {
+          RCLCPP_ERROR(get_logger(),
+                       "Invariant failure: controller_type is pd but controller is not PdController");
+          return;
+        }
+        pd->set_gains(to_eigen(current_kp), to_eigen(current_kd));
+      }
+    }
   }
 
   // Control core.
@@ -290,17 +622,27 @@ private:
   // RT <-> non-RT handoff.
   arm_control::SpscRing<arm_control::Sample> ring_;
   std::thread control_thread_;
-  std::atomic<bool> running_{true};
+  std::atomic<bool> running_{false};
+  std::atomic<int> active_workers_{0};
+  std::atomic<int> max_workers_{0};
+  std::atomic<int> dropped_count_{0};
+  int previous_dropped_count_ = 0;
+  bool worker_counters_ = false;
 
   // ROS side.
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
-  rclcpp::Publisher<arm_msgs::msg::ArmMetrics>::SharedPtr metrics_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<arm_msgs::msg::ArmMetrics>::SharedPtr metrics_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
+
+  // param updates
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr post_set_parameters_callback_;
 };
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ArmControlNode>());
+  auto node = std::make_shared<ArmControlNode>();
+  rclcpp::spin(node->get_node_base_interface());
   rclcpp::shutdown();
   return 0;
 }
