@@ -1,4 +1,4 @@
-"""Bring up the SO-101 arm control node with the Phase 1.5 gains/target."""
+"""Bring up the SO-101 arm control node in simulation mode."""
 import os
 
 from ament_index_python.packages import get_package_share_directory

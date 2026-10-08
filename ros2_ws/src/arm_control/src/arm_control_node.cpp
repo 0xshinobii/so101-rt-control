@@ -162,7 +162,7 @@ public:
       throw std::invalid_argument("Invalid computed_kd gains");
     }
 
-    if (is_sim) {
+    if (!is_sim) {
       declare_hardware_parameters();
     }
 
@@ -240,35 +240,10 @@ public:
       // --- build the control core ---
       const std::string model_path = resolve_repo_path(
           get_parameter("model_path").get_value<std::string>());
-
-      arm_control::HardwareBackend::Config hardware_config;
-      hardware_config.port = get_parameter("hardware.port").get_value<std::string>();
-      hardware_config.baud = get_parameter("hardware.baud").get_value<int>();
-      hardware_config.calib_path = get_parameter("hardware.calib_path").get_value<std::string>();
-      hardware_config.home_duration = get_parameter("hardware.home_duration").get_value<double>();
-      hardware_config.gripper_q = get_parameter("hardware.gripper_q").get_value<double>();
-      hardware_config.gripper_closed = get_parameter("hardware.gripper_closed").get_value<bool>();
-      hardware_config.gripper_torque_limit = get_parameter("hardware.gripper_torque_limit").get_value<int>();
-      hardware_config.current_lsb_a = get_parameter("hardware.current_lsb_a").get_value<double>();
-      const auto kt_nm_per_a = get_parameter("hardware.kt_nm_per_a").get_value<std::vector<double>>();
-      const auto k_servo = get_parameter("hardware.bridge.k_servo").get_value<std::vector<double>>();
-      if (!validate_gains(kt_nm_per_a)) {
-        throw std::invalid_argument("Invalid kt_nm_per_a gains");
-      }
-      if (!validate_gains(k_servo)) {
-        throw std::invalid_argument("Invalid k_servo gains");
-      }
-      std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), hardware_config.kt_nm_per_a.begin());
-      std::copy(k_servo.begin(), k_servo.end(), hardware_config.k_servo.begin());
-      hardware_config.rx_timeout_ns = get_parameter("hardware.bus.rx_timeout_ns").get_value<int>();
-      hardware_config.tx_timeout_ns = get_parameter("hardware.bus.tx_timeout_ns").get_value<int>();
-      hardware_config.max_bus_fails = get_parameter("hardware.bus.max_bus_fails").get_value<int>();
-      hardware_config.max_lead_q = get_parameter("hardware.bridge.max_lead_q").get_value<double>();
-      hardware_config.goal_speed = get_parameter("hardware.bridge.goal_speed").get_value<int>();
-      hardware_config.dt = 1.0 / rate_hz;
       const std::string urdf_path = resolve_repo_path(
           get_parameter("urdf_path").get_value<std::string>());
-      hardware_config.urdf_path = urdf_path;
+      const std::string payload_urdf_path = resolve_repo_path(
+          get_parameter("payload_urdf_path").get_value<std::string>());
 
       const bool is_sim = get_parameter("is_sim").get_value<bool>();
       std::unique_ptr<arm_control::PlantInterface> plant;
@@ -279,11 +254,39 @@ public:
           static_cast<arm_control::MujocoBackend*>(plant.get())->set_body_mass("known_payload", plant_payload_mass);
         }
       } else {
+        arm_control::HardwareBackend::Config hardware_config;
+        hardware_config.baud = get_parameter("hardware.baud").get_value<int>();
+        std::cout << "here1" << std::endl;
+        const auto test = get_parameter("hardware.port");
+        std::cout << "test: " << test.get_value<std::string>() << std::endl;
+        hardware_config.port = get_parameter("hardware.port").get_value<std::string>();
+        std::cout << "here2" << std::endl;
+        hardware_config.calib_path = resolve_repo_path(get_parameter("hardware.calib_path").get_value<std::string>());
+        RCLCPP_INFO(get_logger(), "calib_path: %s", hardware_config.calib_path.c_str());
+        hardware_config.home_duration = get_parameter("hardware.home_duration").get_value<double>();
+        hardware_config.gripper_q = get_parameter("hardware.gripper_q").get_value<double>();
+        hardware_config.gripper_closed = get_parameter("hardware.gripper_closed").get_value<bool>();
+        hardware_config.gripper_torque_limit = get_parameter("hardware.gripper_torque_limit").get_value<int>();
+        hardware_config.current_lsb_a = get_parameter("hardware.current_lsb_a").get_value<double>();
+        const auto kt_nm_per_a = get_parameter("hardware.kt_nm_per_a").get_value<std::vector<double>>();
+        const auto k_servo = get_parameter("hardware.bridge.k_servo").get_value<std::vector<double>>();
+        if (!validate_gains(kt_nm_per_a)) {
+          throw std::invalid_argument("Invalid kt_nm_per_a gains");
+        }
+        if (!validate_gains(k_servo)) {
+          throw std::invalid_argument("Invalid k_servo gains");
+        }
+        std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), hardware_config.kt_nm_per_a.begin());
+        std::copy(k_servo.begin(), k_servo.end(), hardware_config.k_servo.begin());
+        hardware_config.rx_timeout_ns = get_parameter("hardware.bus.rx_timeout_ns").get_value<int>();
+        hardware_config.tx_timeout_ns = get_parameter("hardware.bus.tx_timeout_ns").get_value<int>();
+        hardware_config.max_bus_fails = get_parameter("hardware.bus.max_bus_fails").get_value<int>();
+        hardware_config.max_lead_q = get_parameter("hardware.bridge.max_lead_q").get_value<double>();
+        hardware_config.goal_speed = get_parameter("hardware.bridge.goal_speed").get_value<int>();
+        hardware_config.dt = 1.0 / rate_hz;
+        hardware_config.urdf_path = urdf_path;
         plant = std::make_unique<arm_control::HardwareBackend>(hardware_config);
       }
-
-      const std::string payload_urdf_path = resolve_repo_path(
-          get_parameter("payload_urdf_path").get_value<std::string>());
 
       const std::vector<double> kp = get_parameter("kp").get_value<std::vector<double>>();
       const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();
@@ -351,8 +354,8 @@ public:
       metrics_pub_ = std::move(metrics_pub);
 
       RCLCPP_INFO(get_logger(),
-                  "arm_control_node configured: model=%s controller=%s rate=%.0f Hz",
-                  model_path.c_str(), controller_type.c_str(), rate_hz_);
+                  "arm_control_node configured: is_sim=%d model=%s controller=%s rate=%.0f Hz",
+                  is_sim, model_path.c_str(), controller_type.c_str(), rate_hz_);
     } catch (const std::invalid_argument& e) {
       RCLCPP_ERROR(get_logger(), "Configuration error: %s", e.what());
       return LifecycleNodeInterface::CallbackReturn::FAILURE;
