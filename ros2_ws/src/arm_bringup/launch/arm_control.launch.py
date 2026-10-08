@@ -8,7 +8,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     params = os.path.join(
-        get_package_share_directory("arm_bringup"), "config", "params.yaml"
+        get_package_share_directory("arm_bringup"), "config", "sim.yaml"
     )
     return LaunchDescription([
         Node(

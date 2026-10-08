@@ -33,6 +33,7 @@
 #include "arm_control/control_loop.hpp"
 #include "arm_control/controller.hpp"
 #include "arm_control/mujoco_backend.hpp"
+#include "arm_control/hardware_backend.hpp"
 #include "arm_control/pd_controller.hpp"
 #include "arm_control/rt_thread.hpp"
 #include "arm_control/spsc_ring.hpp"
@@ -98,10 +99,12 @@ bool validate_gains(const std::vector<double>& v) {
 }
 
 }  // namespace
+
 class ArmControlNode : public rclcpp_lifecycle::LifecycleNode {
 public:
   ArmControlNode() : rclcpp_lifecycle::LifecycleNode("arm_control_node"), ring_(1024) {
     // --- parameters (gains / target / model / rate) ---
+    const bool is_sim = declare_parameter<bool>("is_sim", true);
     const std::string model_path = declare_parameter<std::string>(
         "model_path", "models/so101/scene_torque.xml");
     const std::string controller_type =
@@ -129,19 +132,40 @@ public:
     }
     jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
     const auto kp = declare_parameter<std::vector<double>>(
-        "kp", {40.0, 40.0, 25.0, 15.0, 8.0, 5.0});
+        "kp", is_sim
+        ? std::vector<double>{40.0, 40.0, 25.0, 15.0, 8.0, 5.0}
+        : std::vector<double>{8.0, 12.0, 2.0, 8.0, 8.0, 0.0});
     if (!validate_gains(kp)) {
       throw std::invalid_argument("Invalid kp gains");
     }
     const auto kd = declare_parameter<std::vector<double>>(
-        "kd", {3.0, 3.0, 2.0, 1.0, 0.6, 0.4});
+        "kd", is_sim
+        ? std::vector<double>{3.0, 3.0, 2.0, 1.0, 0.6, 0.4}
+        : std::vector<double>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     if (!validate_gains(kd)) {
       throw std::invalid_argument("Invalid kd gains");
     }
+
     const auto computed_kp = declare_parameter<std::vector<double>>(
-        "computed_kp", {400.0, 400.0, 400.0, 400.0, 400.0, 400.0});
+        "computed_kp", is_sim
+        ? std::vector<double>{400.0, 400.0, 400.0, 400.0, 400.0, 400.0}
+        : std::vector<double>{40.0, 40.0, 40.0, 40.0, 40.0, 40.0});
+    if (!validate_gains(computed_kp)) {
+      throw std::invalid_argument("Invalid computed_kp gains");
+    }
+
     const auto computed_kd = declare_parameter<std::vector<double>>(
-        "computed_kd", {40.0, 40.0, 40.0, 40.0, 40.0, 40.0});
+        "computed_kd", is_sim
+        ? std::vector<double>{40.0, 40.0, 40.0, 40.0, 40.0, 40.0}
+        : std::vector<double>{4.0, 4.0, 4.0, 4.0, 4.0, 4.0});
+    if (!validate_gains(computed_kd)) {
+      throw std::invalid_argument("Invalid computed_kd gains");
+    }
+
+    if (is_sim) {
+      declare_hardware_parameters();
+    }
+
     arm_control::PayloadMassRlsEstimator::Config estimator_config;
     estimator_config.initial_mass =
         declare_parameter<double>("rls_initial_mass", 0.0);
@@ -161,6 +185,30 @@ public:
 
     // register the post-set parameters callback
     post_set_parameters_callback_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_post_set_parameters_callback(parameters); });
+  }
+
+  inline void declare_hardware_parameters() {
+    declare_parameter<std::string>("hardware.port", "/dev/ttyACM0");
+    declare_parameter<int>("hardware.baud", 1000000);
+    declare_parameter<std::string>("hardware.calib_path", "so101_follower_calib.json");
+    declare_parameter<double>("hardware.home_duration", 4.0);
+    declare_parameter<double>("hardware.gripper_q", 0.0);
+    declare_parameter<bool>("hardware.gripper_closed", false);
+    declare_parameter<int>("hardware.gripper_torque_limit", 200);
+    declare_parameter<double>("hardware.current_lsb_a", 0.0065);
+    const auto kt_nm_per_a = declare_parameter<std::vector<double>>("hardware.kt_nm_per_a", {1.0, 1.0, 1.0, 1.0, 1.0, 0.0});
+    if (!validate_gains(kt_nm_per_a)) {
+      throw std::invalid_argument("Invalid kt_nm_per_a gains");
+    }
+    declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
+    declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
+    declare_parameter<int>("hardware.bus.max_bus_fails", 3);
+    const auto k_servo = declare_parameter<std::vector<double>>("hardware.bridge.k_servo", {50.0, 90.0, 11.0, 50.0, 50.0, 50.0});
+    if (!validate_gains(k_servo)) {
+      throw std::invalid_argument("Invalid k_servo gains");
+    }
+    declare_parameter<double>("hardware.bridge.max_lead_q", 0.12);
+    declare_parameter<int>("hardware.bridge.goal_speed", 40);
   }
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
@@ -192,15 +240,48 @@ public:
       // --- build the control core ---
       const std::string model_path = resolve_repo_path(
           get_parameter("model_path").get_value<std::string>());
-      auto plant = std::make_unique<arm_control::MujocoBackend>(model_path);
 
-      const double plant_payload_mass = get_parameter("plant_payload_mass").get_value<double>();
-      if (plant_payload_mass >= 0.0) {
-        plant->set_body_mass("known_payload", plant_payload_mass);
+      arm_control::HardwareBackend::Config hardware_config;
+      hardware_config.port = get_parameter("hardware.port").get_value<std::string>();
+      hardware_config.baud = get_parameter("hardware.baud").get_value<int>();
+      hardware_config.calib_path = get_parameter("hardware.calib_path").get_value<std::string>();
+      hardware_config.home_duration = get_parameter("hardware.home_duration").get_value<double>();
+      hardware_config.gripper_q = get_parameter("hardware.gripper_q").get_value<double>();
+      hardware_config.gripper_closed = get_parameter("hardware.gripper_closed").get_value<bool>();
+      hardware_config.gripper_torque_limit = get_parameter("hardware.gripper_torque_limit").get_value<int>();
+      hardware_config.current_lsb_a = get_parameter("hardware.current_lsb_a").get_value<double>();
+      const auto kt_nm_per_a = get_parameter("hardware.kt_nm_per_a").get_value<std::vector<double>>();
+      const auto k_servo = get_parameter("hardware.bridge.k_servo").get_value<std::vector<double>>();
+      if (!validate_gains(kt_nm_per_a)) {
+        throw std::invalid_argument("Invalid kt_nm_per_a gains");
       }
-
+      if (!validate_gains(k_servo)) {
+        throw std::invalid_argument("Invalid k_servo gains");
+      }
+      std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), hardware_config.kt_nm_per_a.begin());
+      std::copy(k_servo.begin(), k_servo.end(), hardware_config.k_servo.begin());
+      hardware_config.rx_timeout_ns = get_parameter("hardware.bus.rx_timeout_ns").get_value<int>();
+      hardware_config.tx_timeout_ns = get_parameter("hardware.bus.tx_timeout_ns").get_value<int>();
+      hardware_config.max_bus_fails = get_parameter("hardware.bus.max_bus_fails").get_value<int>();
+      hardware_config.max_lead_q = get_parameter("hardware.bridge.max_lead_q").get_value<double>();
+      hardware_config.goal_speed = get_parameter("hardware.bridge.goal_speed").get_value<int>();
+      hardware_config.dt = 1.0 / rate_hz;
       const std::string urdf_path = resolve_repo_path(
           get_parameter("urdf_path").get_value<std::string>());
+      hardware_config.urdf_path = urdf_path;
+
+      const bool is_sim = get_parameter("is_sim").get_value<bool>();
+      std::unique_ptr<arm_control::PlantInterface> plant;
+      if (is_sim) {
+        plant = std::make_unique<arm_control::MujocoBackend>(model_path);
+        const double plant_payload_mass = get_parameter("plant_payload_mass").get_value<double>();
+        if (plant_payload_mass >= 0.0) {
+          static_cast<arm_control::MujocoBackend*>(plant.get())->set_body_mass("known_payload", plant_payload_mass);
+        }
+      } else {
+        plant = std::make_unique<arm_control::HardwareBackend>(hardware_config);
+      }
+
       const std::string payload_urdf_path = resolve_repo_path(
           get_parameter("payload_urdf_path").get_value<std::string>());
 
@@ -603,7 +684,7 @@ private:
   }
 
   // Control core.
-  std::unique_ptr<arm_control::MujocoBackend> plant_;
+  std::unique_ptr<arm_control::PlantInterface> plant_;
   std::unique_ptr<arm_control::Controller> controller_;
   std::unique_ptr<arm_control::ControlLoop> loop_;
   std::vector<double> target_;

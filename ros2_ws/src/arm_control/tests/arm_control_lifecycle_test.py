@@ -43,7 +43,7 @@ CYCLE = (
 def _params_file():
     return os.path.normpath(os.path.join(
         os.path.dirname(__file__),
-        "..", "..", "arm_bringup", "config", "params.yaml",
+        "..", "..", "arm_bringup", "config", "sim.yaml",
     ))
 
 

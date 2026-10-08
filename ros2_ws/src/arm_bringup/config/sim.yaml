@@ -1,6 +1,7 @@
 arm_control_node:
   ros__parameters:
     # Repo-root relative. The node walks up from its working directory to find them.
+    is_sim: true
     model_path: "models/so101/scene_torque.xml"
     urdf_path: "models/so101/so101_dynamics.urdf"
     payload_urdf_path: "models/so101/so101_dynamics_payload.urdf"

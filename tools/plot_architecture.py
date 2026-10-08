@@ -153,7 +153,7 @@ zone_label(LEFT + 16, 118, "NON-REAL-TIME — rclcpp EXECUTOR THREAD", MUTED)
 text(LEFT + 16, 135, "may allocate, block, log, take locks — none of it can stall "
      "the servo loop", size=10.5, fill=FAINT)
 
-box(56, 146, 168, 86, "params.yaml",
+box(56, 146, 168, 86, "sim.yaml",
     lines=("gains, target, rate",),
     mono_lines=("rt_priority: 80", "rate_hz: 200.0"))
 box(236, 146, 176, 86, "rclcpp::spin()",
