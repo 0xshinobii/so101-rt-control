@@ -314,30 +314,15 @@ void HardwareBackend::gravity(const Eigen::VectorXd& q,
   dynamics_->gravity(q, tau);
 }
 
+void HardwareBackend::set_time(double t) {
+  t_ = t;
+  external_time_ = true;
+}
+
 void HardwareBackend::step() {
-  const auto period =
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-          std::chrono::duration<double>(cfg_.dt));
-  // Arm on the first call WITHOUT consuming a period, then sleep on every call
-  // including the first. Arming to now+period and returning early made the
-  // first interval ~0 ms and the second ~10 ms, and no counter could see it.
-  if (!period_armed_) {
-    next_wakeup_ = std::chrono::steady_clock::now();
-    period_armed_ = true;
-  }
-  next_wakeup_ += period;
-  // t_ advances by exactly dt whether or not the deadline was met, so the
-  // logged time axis is nominal. Count overruns rather than let the log
-  // quietly claim 200 Hz that the bus did not deliver.
-  const auto now = std::chrono::steady_clock::now();
-  if (now > next_wakeup_) {
-    ++late_ticks_;
-    const int64_t late = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now - next_wakeup_).count();
-    if (late > max_late_ns_) max_late_ns_ = late;
-  }
-  sleep_until_monotonic(next_wakeup_);
-  t_ += cfg_.dt;
+  // Standalone callers advance one nominal period. The node sets the
+  // schedule, including skipped deadlines, and step() must not add dt again.
+  if (!external_time_) t_ += cfg_.dt;
 }
 
 Eigen::Vector3d HardwareBackend::ee_position() {
@@ -367,6 +352,7 @@ void HardwareBackend::reset() {
   have_q_ = false;
   qdot_.setZero();
   t_ = 0.0;
+  external_time_ = false;
   period_armed_ = false;
   read_bus_fails_ = 0;
   write_bus_fails_ = 0;

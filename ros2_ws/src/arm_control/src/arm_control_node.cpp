@@ -677,13 +677,25 @@ private:
 
       const size_t jitter_cap =
           jitter_samples_ > 0 ? static_cast<size_t>(jitter_samples_) : 0;
-      std::vector<int64_t> late_ns(jitter_cap);
+      std::vector<int64_t> loop_late_ns(jitter_cap);
+      std::vector<int64_t> wake_late_ns(jitter_cap);
       size_t jitter_n = 0;
+      int64_t max_loop_late_ns = 0;
+      int64_t max_wake_late_ns = 0;
+      uint64_t cycles = 0;
 
-      const auto period = std::chrono::duration<double>(1.0 / rate_hz_);
-      auto next = std::chrono::steady_clock::now();
+      const auto period =
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::duration<double>(1.0 / rate_hz_));
+      const auto origin = std::chrono::steady_clock::now();
+      auto next = origin;
+      auto* hardware = dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
       arm_control::Sample s;  // reused; no per-iteration allocation
       while (running_.load(std::memory_order_acquire)) {
+        if (hardware) {
+          hardware->set_time(
+              std::chrono::duration<double>(next - origin).count());
+        }
         if (reference_type_ == "smooth") {
           minimum_jerk_reference(plant_->time(), target_eigen_, q_ref_,
                                  qdot_ref_, qddot_ref_);
@@ -693,42 +705,67 @@ private:
         if (!ring_.push(s)) {
           dropped_count_.fetch_add(1, std::memory_order_relaxed);
         }
-        next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            period);
+        ++cycles;
+        const auto work_done = std::chrono::steady_clock::now();
+        const auto deadline = next + period;
+        const int64_t loop_late = std::chrono::duration_cast<std::chrono::nanoseconds>(work_done - deadline).count();
+        if (loop_late > max_loop_late_ns) max_loop_late_ns = loop_late;
+        next = deadline;
+        // Missed deadline: jump to the next one still in the future.
+        if (next <= work_done) {
+          const auto skips = (work_done - next) / period + 1;
+          next += skips * period;
+        }
         arm_control::sleep_until_monotonic(next);
+        const auto woke = std::chrono::steady_clock::now();
+        const int64_t wake_late =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(woke - next)
+                .count();
+        if (wake_late > max_wake_late_ns) max_wake_late_ns = wake_late;
         if (jitter_n < jitter_cap) {
-          const auto now = std::chrono::steady_clock::now();
-          late_ns[jitter_n++] =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(now - next)
-                  .count();
+          loop_late_ns[jitter_n] = loop_late;
+          wake_late_ns[jitter_n] = wake_late;
+          ++jitter_n;
         }
       }
 
-      if (jitter_n == 0) return;
-      int64_t min_ns = late_ns[0];
-      int64_t max_ns = late_ns[0];
-      long double sum = 0;
-      for (size_t i = 0; i < jitter_n; ++i) {
-        if (late_ns[i] < min_ns) min_ns = late_ns[i];
-        if (late_ns[i] > max_ns) max_ns = late_ns[i];
-        sum += static_cast<long double>(late_ns[i]);
-      }
-      std::fprintf(stderr,
-                   "control jitter: n=%zu Min: %.3f Avg: %.3f Max: %.3f (us)\n",
-                   jitter_n, min_ns / 1000.0,
-                   static_cast<double>(sum / jitter_n) / 1000.0,
-                   max_ns / 1000.0);
-      if (jitter_csv_.empty()) return;
+      if (cycles == 0) return;
+      auto report = [](const char* name, const std::vector<int64_t>& samples,
+                       size_t n, int64_t run_max_ns) {
+        if (n == 0) {
+          std::fprintf(stderr, "%s: n=0 run max: %.3f (us)\n", name,
+                       run_max_ns / 1000.0);
+          return;
+        }
+        int64_t min_ns = samples[0];
+        int64_t max_ns = samples[0];
+        long double sum = 0;
+        for (size_t i = 0; i < n; ++i) {
+          if (samples[i] < min_ns) min_ns = samples[i];
+          if (samples[i] > max_ns) max_ns = samples[i];
+          sum += static_cast<long double>(samples[i]);
+        }
+        std::fprintf(stderr,
+                     "%s: n=%zu Min: %.3f Avg: %.3f Max: %.3f  run max: %.3f "
+                     "(us)\n",
+                     name, n, min_ns / 1000.0,
+                     static_cast<double>(sum / n) / 1000.0, max_ns / 1000.0,
+                     run_max_ns / 1000.0);
+      };
+      report("control loop lateness", loop_late_ns, jitter_n, max_loop_late_ns);
+      report("wakeup jitter", wake_late_ns, jitter_n, max_wake_late_ns);
+      if (jitter_csv_.empty() || jitter_n == 0) return;
       std::ofstream out(jitter_csv_);
       if (!out) {
         std::fprintf(stderr, "failed to write %s\n", jitter_csv_.c_str());
         return;
       }
       out << "# rate_hz=" << rate_hz_ << "\n";
-      out << "i,late_us\n";
+      out << "i,loop_late_us,wake_late_us\n";
       out.precision(9);
       for (size_t i = 0; i < jitter_n; ++i) {
-        out << i << ',' << late_ns[i] / 1000.0 << '\n';
+        out << i << ',' << loop_late_ns[i] / 1000.0 << ','
+            << wake_late_ns[i] / 1000.0 << '\n';
       }
       std::fprintf(stderr, "wrote %s\n", jitter_csv_.c_str());
     } catch (const std::exception& e) {

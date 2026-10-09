@@ -82,6 +82,9 @@ public:
   int dof() const override { return kDof; }
   double timestep() const override { return cfg_.dt; }
   double time() const override { return t_; }
+  // Node-owned schedule, including periods skipped after a miss.
+  // Once set, step() no longer adds dt.
+  void set_time(double t);
 
 private:
   void disable_torque();
@@ -120,6 +123,7 @@ private:
   int write_bus_fails_ = 0;
   int gripper_hold_tick_ = -1;
   double t_ = 0.0;
+  bool external_time_ = false;
   bool period_armed_ = false;
   std::chrono::steady_clock::time_point next_wakeup_{};
   int64_t cycle_deadline_ns_ = 0;
