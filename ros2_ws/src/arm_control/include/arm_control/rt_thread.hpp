@@ -37,11 +37,15 @@ struct RtStatus {
   std::string error;
 };
 
-inline void append_error(RtStatus& st, const char* what) {
+inline void append_error(RtStatus& st, const char* what, int errnum) {
   if (!st.error.empty()) st.error += "; ";
   st.error += what;
   st.error += ": ";
-  st.error += std::strerror(errno);
+  st.error += std::strerror(errnum);
+}
+
+inline void append_error(RtStatus& st, const char* what) {
+  append_error(st, what, errno);
 }
 
 inline RtStatus configure_rt_thread(const RtConfig& cfg) {
@@ -64,8 +68,9 @@ inline RtStatus configure_rt_thread(const RtConfig& cfg) {
   if (cfg.fifo_priority > 0) {
     struct sched_param sp;
     sp.sched_priority = cfg.fifo_priority;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
-      append_error(st, "pthread_setschedparam(SCHED_FIFO)");
+    if (const int rc =
+            pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp)) {
+      append_error(st, "pthread_setschedparam(SCHED_FIFO)", rc);
     } else {
       st.fifo_set = true;
     }
@@ -76,8 +81,9 @@ inline RtStatus configure_rt_thread(const RtConfig& cfg) {
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(cfg.cpu_affinity, &set);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0) {
-      append_error(st, "pthread_setaffinity_np");
+    if (const int rc =
+            pthread_setaffinity_np(pthread_self(), sizeof(set), &set)) {
+      append_error(st, "pthread_setaffinity_np", rc);
     } else {
       st.affinity_set = true;
     }

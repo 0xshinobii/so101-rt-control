@@ -437,6 +437,7 @@ public:
       previous_dropped_count_ = 0;
       max_workers_.store(0, std::memory_order_relaxed);
       running_.store(true, std::memory_order_release);
+      loop_->reset();
       control_thread_ = std::thread([this]() { control_loop(); });
     } catch (const std::exception& e) {
       running_.store(false, std::memory_order_release);
