@@ -36,7 +36,7 @@ public:
     double home_duration = 4.0;
     double gripper_q = 0.0;      // held during home + tracking
     bool gripper_closed = false; // true: hold calib min_ticks
-    int gripper_torque_limit = 200;  // 0–1000; 200 = 20% (70 g pinch)
+    int gripper_torque_limit = 200;  // 1–1000; 200 = 20% (70 g pinch)
     double current_lsb_a = 0.0065;  // STS3215 Present_Current
     // N·m per amp, joint frame. Gripper 0: jaw current is not payload gravity.
     std::array<double, kDof> kt_nm_per_a = {1.0, 1.0, 1.0, 1.0, 1.0, 0.0};

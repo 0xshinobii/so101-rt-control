@@ -53,6 +53,9 @@ HardwareBackend::HardwareBackend(Config cfg)
       q_cmd_(Eigen::VectorXd::Zero(kDof)),
       q_ref_(Eigen::VectorXd::Zero(kDof)),
       q_new_(Eigen::VectorXd::Zero(kDof)) {
+  if (cfg_.gripper_torque_limit < 1 || cfg_.gripper_torque_limit > 1000) {
+    throw std::invalid_argument("gripper_torque_limit must be in [1, 1000]");
+  }
   // Size the packet scratch once so the 200 Hz path never calls the allocator.
   rx_buf_.reserve(64);
   tx_buf_.assign(2 * kDof, 0);
@@ -134,10 +137,12 @@ void HardwareBackend::enable_torque_at_current() {
 }
 
 void HardwareBackend::set_torque_limit(uint16_t limit) {
+  if (cfg_.gripper_torque_limit < 1 || cfg_.gripper_torque_limit > 1000) {
+    throw std::invalid_argument("gripper_torque_limit must be in [1, 1000]");
+  }
   const uint8_t arm[2] = {static_cast<uint8_t>(limit & 0xFF),
                           static_cast<uint8_t>((limit >> 8) & 0xFF)};
-  const uint16_t g_lim = static_cast<uint16_t>(
-      std::clamp(cfg_.gripper_torque_limit, 1, 1000));
+  const auto g_lim = static_cast<uint16_t>(cfg_.gripper_torque_limit);
   const uint8_t grip[2] = {static_cast<uint8_t>(g_lim & 0xFF),
                            static_cast<uint8_t>((g_lim >> 8) & 0xFF)};
   for (int i = 0; i < kDof; ++i) {

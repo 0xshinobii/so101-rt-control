@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
 #endif
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -33,8 +35,11 @@
 #include "arm_control/control_loop.hpp"
 #include "arm_control/controller.hpp"
 #include "arm_control/mujoco_backend.hpp"
+#include "arm_control/feetech_bus.hpp"
 #include "arm_control/hardware_backend.hpp"
 #include "arm_control/pd_controller.hpp"
+#include "arm_control/pinocchio_dynamics.hpp"
+#include "arm_control/so101_calib.hpp"
 #include "arm_control/rt_thread.hpp"
 #include "arm_control/spsc_ring.hpp"
 #include "arm_msgs/msg/arm_metrics.hpp"
@@ -47,6 +52,18 @@ const std::vector<std::string> kJointNames = {
     "wrist_flex",   "wrist_roll",    "gripper"};
 constexpr int kArmJoints = 5;  // first 5 are the arm; index 5 is the held gripper
 constexpr double kReferenceDuration = 1.0;
+// Project bring-up settings, not servo datasheet limits.
+constexpr double kHardwareRateHz = 200.0;
+constexpr double kMaxLeadQRad = 0.12;
+constexpr int kHardwareMaxBusFails = 3;
+// STS3215 Goal_Speed (address 46) is 0–3400 steps/s. 0 means unlimited.
+// Unlimited is rejected so the position bridge keeps a finite speed bound.
+constexpr int kGoalSpeedMin = 1;
+constexpr int kGoalSpeedMax = 3400;
+// Worst-case rx+tx waits must leave this much of the period for the controller.
+constexpr int64_t kMinControllerBudgetNs = 1000000;
+constexpr int kTickMax = 4095;
+constexpr double kRadPerTick = 2.0 * M_PI / 4096.0;
 
 Eigen::VectorXd to_eigen(const std::vector<double>& v) {
   Eigen::VectorXd e(v.size());
@@ -96,6 +113,63 @@ bool validate_gains(const std::vector<double>& v) {
   const bool is_finite = all_finite(v);
   const bool is_all_non_negative = std::all_of(v.begin(), v.end(), [](double x) { return x >= 0.0; });
   return is_valid_dimension && is_finite && is_all_non_negative;
+}
+
+// validate_gains() allows zero. The torque bridge divides by k_servo.
+bool strictly_positive(const std::vector<double>& v) {
+  return v.size() == arm_control::kDof && all_finite(v) &&
+         std::all_of(v.begin(), v.end(), [](double x) { return x > 0.0; });
+}
+
+// Arm joints enter the payload regressor. Gripper current does not, so its
+// kt may be zero under the current calibration convention.
+bool valid_kt(const std::vector<double>& kt) {
+  if (!validate_gains(kt)) return false;
+  return std::all_of(kt.begin(), kt.begin() + kArmJoints,
+                     [](double x) { return x > 0.0; });
+}
+
+bool frozen_while_configured(const std::string& name) {
+  return name == "is_sim" || name == "model_path" || name == "urdf_path" ||
+         name == "rate_hz" || name.rfind("hardware.", 0) == 0;
+}
+
+void validate_joint_calib(
+    const std::array<arm_control::JointCalib, arm_control::kDof>& calib) {
+  std::set<int> ids;
+  for (int i = 0; i < arm_control::kDof; ++i) {
+    const auto& c = calib[static_cast<size_t>(i)];
+    const std::string& name = kJointNames[static_cast<size_t>(i)];
+    if (c.id < 0 || c.id > 253 || !ids.insert(c.id).second) {
+      throw std::invalid_argument(
+          name + " servo id must be unique and in 0..253");
+    }
+    if (c.sign != 1 && c.sign != -1) {
+      throw std::invalid_argument(name + " sign must be +1 or -1");
+    }
+    if (c.min_ticks < 0 || c.max_ticks > kTickMax || c.min_ticks >= c.max_ticks) {
+      throw std::invalid_argument(
+          name + " tick limits must satisfy 0 <= min < max <= 4095");
+    }
+    if (c.zero_ticks < 0 || c.zero_ticks > kTickMax) {
+      throw std::invalid_argument(name + " zero_ticks must be in 0..4095");
+    }
+  }
+}
+
+void require_in_joint_limits(const char* what, int joint, double q,
+                             const arm_control::JointCalib& c) {
+  const double q_min =
+      c.sign * (static_cast<double>(c.min_ticks) - c.zero_ticks) * kRadPerTick;
+  const double q_max =
+      c.sign * (static_cast<double>(c.max_ticks) - c.zero_ticks) * kRadPerTick;
+  const double lo = std::min(q_min, q_max);
+  const double hi = std::max(q_min, q_max);
+  if (!(std::isfinite(q) && q >= lo && q <= hi)) {
+    throw std::invalid_argument(
+        std::string(what) + " " + kJointNames[static_cast<size_t>(joint)] +
+        " is outside calibrated joint limits");
+  }
 }
 
 }  // namespace
@@ -197,14 +271,14 @@ public:
     declare_parameter<int>("hardware.gripper_torque_limit", 200);
     declare_parameter<double>("hardware.current_lsb_a", 0.0065);
     const auto kt_nm_per_a = declare_parameter<std::vector<double>>("hardware.kt_nm_per_a", {1.0, 1.0, 1.0, 1.0, 1.0, 0.0});
-    if (!validate_gains(kt_nm_per_a)) {
+    if (!valid_kt(kt_nm_per_a)) {
       throw std::invalid_argument("Invalid kt_nm_per_a gains");
     }
     declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
     declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
     declare_parameter<int>("hardware.bus.max_bus_fails", 3);
     const auto k_servo = declare_parameter<std::vector<double>>("hardware.bridge.k_servo", {50.0, 90.0, 11.0, 50.0, 50.0, 50.0});
-    if (!validate_gains(k_servo)) {
+    if (!strictly_positive(k_servo)) {
       throw std::invalid_argument("Invalid k_servo gains");
     }
     declare_parameter<double>("hardware.bridge.max_lead_q", 0.12);
@@ -213,9 +287,14 @@ public:
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
     try {
+      const bool is_sim = get_parameter("is_sim").get_value<bool>();
       const double rate_hz = get_parameter("rate_hz").get_value<double>();
       if (!std::isfinite(rate_hz) || rate_hz <= 0.0) {
         throw std::invalid_argument("Invalid rate: " + std::to_string(rate_hz));
+      }
+      if (!is_sim && rate_hz != kHardwareRateHz) {
+        throw std::invalid_argument(
+            "hardware rate_hz must be the validated project rate of 200 Hz");
       }
 
       const std::string reference_type = get_parameter("reference_type").get_value<std::string>();
@@ -224,11 +303,22 @@ public:
       }
 
       std::vector<double> target = get_parameter("target").get_value<std::vector<double>>();
-      if (target.size() != arm_control::kDof) {
-        throw std::invalid_argument("Invalid target size: " + std::to_string(target.size()));
+      if (target.size() != arm_control::kDof || !all_finite(target)) {
+        throw std::invalid_argument("target must be six finite values");
       }
-      if (!all_finite(target)) {
-        throw std::invalid_argument("Invalid target values");
+
+      const std::vector<double> kp = get_parameter("kp").get_value<std::vector<double>>();
+      const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();
+      const std::vector<double> computed_kp = get_parameter("computed_kp").get_value<std::vector<double>>();
+      const std::vector<double> computed_kd = get_parameter("computed_kd").get_value<std::vector<double>>();
+      if (!validate_gains(kp) || !validate_gains(kd) || !validate_gains(computed_kp) || !validate_gains(computed_kd)) {
+        throw std::invalid_argument(
+            "controller gains must be six finite, nonnegative values");
+      }
+
+      const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
+      if (controller_type != "pd" && controller_type != "computed_torque" && controller_type != "adaptive_computed_torque") {
+        throw std::invalid_argument("Invalid controller type: " + controller_type);
       }
 
       bool rt_enable = get_parameter("rt_enable").get_value<bool>();
@@ -245,7 +335,6 @@ public:
       const std::string payload_urdf_path = resolve_repo_path(
           get_parameter("payload_urdf_path").get_value<std::string>());
 
-      const bool is_sim = get_parameter("is_sim").get_value<bool>();
       std::unique_ptr<arm_control::PlantInterface> plant;
       if (is_sim) {
         plant = std::make_unique<arm_control::MujocoBackend>(model_path);
@@ -254,46 +343,8 @@ public:
           static_cast<arm_control::MujocoBackend*>(plant.get())->set_body_mass("known_payload", plant_payload_mass);
         }
       } else {
-        arm_control::HardwareBackend::Config hardware_config;
-        hardware_config.baud = get_parameter("hardware.baud").get_value<int>();
-        std::cout << "here1" << std::endl;
-        const auto test = get_parameter("hardware.port");
-        std::cout << "test: " << test.get_value<std::string>() << std::endl;
-        hardware_config.port = get_parameter("hardware.port").get_value<std::string>();
-        std::cout << "here2" << std::endl;
-        hardware_config.calib_path = resolve_repo_path(get_parameter("hardware.calib_path").get_value<std::string>());
-        RCLCPP_INFO(get_logger(), "calib_path: %s", hardware_config.calib_path.c_str());
-        hardware_config.home_duration = get_parameter("hardware.home_duration").get_value<double>();
-        hardware_config.gripper_q = get_parameter("hardware.gripper_q").get_value<double>();
-        hardware_config.gripper_closed = get_parameter("hardware.gripper_closed").get_value<bool>();
-        hardware_config.gripper_torque_limit = get_parameter("hardware.gripper_torque_limit").get_value<int>();
-        hardware_config.current_lsb_a = get_parameter("hardware.current_lsb_a").get_value<double>();
-        const auto kt_nm_per_a = get_parameter("hardware.kt_nm_per_a").get_value<std::vector<double>>();
-        const auto k_servo = get_parameter("hardware.bridge.k_servo").get_value<std::vector<double>>();
-        if (!validate_gains(kt_nm_per_a)) {
-          throw std::invalid_argument("Invalid kt_nm_per_a gains");
-        }
-        if (!validate_gains(k_servo)) {
-          throw std::invalid_argument("Invalid k_servo gains");
-        }
-        std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), hardware_config.kt_nm_per_a.begin());
-        std::copy(k_servo.begin(), k_servo.end(), hardware_config.k_servo.begin());
-        hardware_config.rx_timeout_ns = get_parameter("hardware.bus.rx_timeout_ns").get_value<int>();
-        hardware_config.tx_timeout_ns = get_parameter("hardware.bus.tx_timeout_ns").get_value<int>();
-        hardware_config.max_bus_fails = get_parameter("hardware.bus.max_bus_fails").get_value<int>();
-        hardware_config.max_lead_q = get_parameter("hardware.bridge.max_lead_q").get_value<double>();
-        hardware_config.goal_speed = get_parameter("hardware.bridge.goal_speed").get_value<int>();
-        hardware_config.dt = 1.0 / rate_hz;
-        hardware_config.urdf_path = urdf_path;
+        const auto hardware_config = make_hardware_config(rate_hz, urdf_path, target);
         plant = std::make_unique<arm_control::HardwareBackend>(hardware_config);
-      }
-
-      const std::vector<double> kp = get_parameter("kp").get_value<std::vector<double>>();
-      const std::vector<double> kd = get_parameter("kd").get_value<std::vector<double>>();
-      const std::vector<double> computed_kp = get_parameter("computed_kp").get_value<std::vector<double>>();
-      const std::vector<double> computed_kd = get_parameter("computed_kd").get_value<std::vector<double>>();
-      if (!validate_gains(kp) || !validate_gains(kd) || !validate_gains(computed_kp) || !validate_gains(computed_kd)) {
-        throw std::invalid_argument("Invalid gains");
       }
 
       const double reference_payload_mass = get_parameter("reference_payload_mass").get_value<double>();
@@ -303,11 +354,6 @@ public:
       estimator_config.forgetting_factor = get_parameter("rls_forgetting_factor").get_value<double>();
       estimator_config.max_mass = get_parameter("rls_max_mass").get_value<double>();
       estimator_config.excitation_threshold = get_parameter("rls_excitation_threshold").get_value<double>();
-
-      const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
-      if (controller_type != "pd" && controller_type != "computed_torque" && controller_type != "adaptive_computed_torque") {
-        throw std::invalid_argument("Invalid controller type: " + controller_type);
-      }
 
       std::unique_ptr<arm_control::Controller> controller;
       if (controller_type == "pd") {
@@ -474,6 +520,147 @@ public:
   }
 
 private:
+  // Validates hardware parameters, then opens the port. Called only from
+  // on_configure(), before HardwareBackend is constructed.
+  arm_control::HardwareBackend::Config make_hardware_config(
+      double rate_hz, const std::string& urdf_path,
+      const std::vector<double>& target) {
+    arm_control::HardwareBackend::Config cfg;
+    cfg.dt = 1.0 / rate_hz;
+    cfg.urdf_path = urdf_path;
+
+    cfg.port = get_parameter("hardware.port").get_value<std::string>();
+    if (cfg.port.empty()) {
+      throw std::invalid_argument("hardware.port must be a nonempty string");
+    }
+    cfg.baud = get_parameter("hardware.baud").get_value<int>();
+    if (!arm_control::FeetechBus::baud_supported(cfg.baud)) {
+      throw std::invalid_argument(
+          "hardware.baud is not supported by the bus (115200 or 1000000)");
+    }
+
+    cfg.calib_path = resolve_repo_path(
+        get_parameter("hardware.calib_path").get_value<std::string>());
+    if (!std::filesystem::is_regular_file(cfg.calib_path)) {
+      throw std::invalid_argument(
+          "hardware.calib_path does not exist: " + cfg.calib_path);
+    }
+    std::array<arm_control::JointCalib, arm_control::kDof> calib{};
+    try {
+      calib = arm_control::load_so101_calib(cfg.calib_path);
+    } catch (const std::exception& e) {
+      throw std::invalid_argument(
+          std::string("hardware.calib_path: ") + e.what());
+    }
+    validate_joint_calib(calib);
+
+    if (!std::filesystem::is_regular_file(urdf_path)) {
+      throw std::invalid_argument("urdf_path does not exist: " + urdf_path);
+    }
+    try {
+      arm_control::PinocchioDynamics{urdf_path};
+    } catch (const std::exception& e) {
+      throw std::invalid_argument(std::string("urdf_path: ") + e.what());
+    }
+
+    const auto k_servo = get_parameter("hardware.bridge.k_servo")
+                             .get_value<std::vector<double>>();
+    if (!strictly_positive(k_servo)) {
+      throw std::invalid_argument(
+          "hardware.bridge.k_servo must be six finite, strictly positive values");
+    }
+    std::copy(k_servo.begin(), k_servo.end(), cfg.k_servo.begin());
+
+    cfg.max_lead_q =
+        get_parameter("hardware.bridge.max_lead_q").get_value<double>();
+    if (!(std::isfinite(cfg.max_lead_q) && cfg.max_lead_q > 0.0 &&
+          cfg.max_lead_q <= kMaxLeadQRad)) {
+      throw std::invalid_argument(
+          "hardware.bridge.max_lead_q must be finite and in (0, 0.12] rad");
+    }
+
+    cfg.goal_speed =
+        get_parameter("hardware.bridge.goal_speed").get_value<int>();
+    if (cfg.goal_speed < kGoalSpeedMin || cfg.goal_speed > kGoalSpeedMax) {
+      throw std::invalid_argument(
+          "hardware.bridge.goal_speed must be in [1, 3400]; 0 (unlimited) is not allowed");
+    }
+
+    const int rx_timeout_ns =
+        get_parameter("hardware.bus.rx_timeout_ns").get_value<int>();
+    const int tx_timeout_ns =
+        get_parameter("hardware.bus.tx_timeout_ns").get_value<int>();
+    if (rx_timeout_ns <= 0 || tx_timeout_ns <= 0) {
+      throw std::invalid_argument("hardware bus timeouts must be positive");
+    }
+    const int64_t period_ns =
+        static_cast<int64_t>(std::llround(1e9 / rate_hz));
+    const int64_t io_ns = static_cast<int64_t>(rx_timeout_ns) +
+                          static_cast<int64_t>(tx_timeout_ns);
+    if (io_ns + kMinControllerBudgetNs > period_ns) {
+      throw std::invalid_argument(
+          "hardware bus timeouts leave no time for controller computation within the period");
+    }
+    cfg.rx_timeout_ns = rx_timeout_ns;
+    cfg.tx_timeout_ns = tx_timeout_ns;
+
+    cfg.max_bus_fails =
+        get_parameter("hardware.bus.max_bus_fails").get_value<int>();
+    if (cfg.max_bus_fails != kHardwareMaxBusFails) {
+      throw std::invalid_argument("hardware.bus.max_bus_fails must be 3");
+    }
+
+    cfg.home_duration =
+        get_parameter("hardware.home_duration").get_value<double>();
+    if (!(std::isfinite(cfg.home_duration) && cfg.home_duration > 0.0)) {
+      throw std::invalid_argument(
+          "hardware.home_duration must be finite and positive");
+    }
+
+    cfg.gripper_closed =
+        get_parameter("hardware.gripper_closed").get_value<bool>();
+    cfg.gripper_q = get_parameter("hardware.gripper_q").get_value<double>();
+    if (!cfg.gripper_closed) {
+      require_in_joint_limits("hardware.gripper_q", 5, cfg.gripper_q, calib[5]);
+    }
+
+    cfg.gripper_torque_limit =
+        get_parameter("hardware.gripper_torque_limit").get_value<int>();
+    if (cfg.gripper_torque_limit < 1 || cfg.gripper_torque_limit > 1000) {
+      throw std::invalid_argument(
+          "hardware.gripper_torque_limit must be in [1, 1000]");
+    }
+
+    cfg.current_lsb_a =
+        get_parameter("hardware.current_lsb_a").get_value<double>();
+    if (!(std::isfinite(cfg.current_lsb_a) && cfg.current_lsb_a > 0.0)) {
+      throw std::invalid_argument(
+          "hardware.current_lsb_a must be finite and strictly positive");
+    }
+
+    const auto kt_nm_per_a = get_parameter("hardware.kt_nm_per_a")
+                                 .get_value<std::vector<double>>();
+    if (!valid_kt(kt_nm_per_a)) {
+      throw std::invalid_argument(
+          "hardware.kt_nm_per_a must be six finite, nonnegative values, "
+          "positive on the arm joints used for payload identification");
+    }
+    std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), cfg.kt_nm_per_a.begin());
+
+    for (int i = 0; i < arm_control::kDof; ++i) {
+      require_in_joint_limits("target", i, target[static_cast<size_t>(i)],
+                              calib[static_cast<size_t>(i)]);
+    }
+
+    try {
+      arm_control::FeetechBus probe;
+      probe.open(cfg.port, cfg.baud);
+    } catch (const std::exception& e) {
+      throw std::invalid_argument(std::string("hardware.port: ") + e.what());
+    }
+    return cfg;
+  }
+
   // Runs on its own thread. Fixed-rate; RT-clean body (no alloc, no rclcpp).
   void control_loop() {
     const int active = active_workers_.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -618,10 +805,18 @@ private:
   rcl_interfaces::msg::SetParametersResult on_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
+    const bool unconfigured =
+        get_current_state().id() ==
+        lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED;
 
     std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
     std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
     for (const auto &param : parameters) {
+      if (!unconfigured && frozen_while_configured(param.get_name())) {
+        result.successful = false;
+        result.reason = param.get_name() + " cannot change while configured";
+        break;
+      }
       if (param.get_name() == "kp" || param.get_name() == "kd") {
         // kp or kd parameter is only allowed to be set when node is inactive
         if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {

@@ -36,6 +36,9 @@ public:
   FeetechBus(const FeetechBus&) = delete;
   FeetechBus& operator=(const FeetechBus&) = delete;
 
+  // Termios rates this bus can program. Not every rate the servo accepts.
+  static bool baud_supported(int baud);
+
   void open(const std::string& device, int baud);
   void close();
   bool is_open() const { return fd_ >= 0; }

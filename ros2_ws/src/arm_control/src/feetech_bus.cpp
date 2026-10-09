@@ -36,6 +36,16 @@ speed_t baud_flag(int baud) {
 
 }  // namespace
 
+bool FeetechBus::baud_supported(int baud) {
+  switch (baud) {
+    case 115200:
+    case 1000000:
+      return true;
+    default:
+      return false;
+  }
+}
+
 FeetechBus::~FeetechBus() { close(); }
 
 void FeetechBus::close() {
