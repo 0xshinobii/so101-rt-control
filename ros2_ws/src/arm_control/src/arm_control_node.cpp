@@ -26,6 +26,7 @@
 #include <Eigen/Dense>
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include <lifecycle_msgs/msg/state.hpp>
+#include <lifecycle_msgs/msg/transition.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
@@ -261,30 +262,6 @@ public:
     post_set_parameters_callback_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_post_set_parameters_callback(parameters); });
   }
 
-  inline void declare_hardware_parameters() {
-    declare_parameter<std::string>("hardware.port", "/dev/ttyACM0");
-    declare_parameter<int>("hardware.baud", 1000000);
-    declare_parameter<std::string>("hardware.calib_path", "so101_follower_calib.json");
-    declare_parameter<double>("hardware.home_duration", 4.0);
-    declare_parameter<double>("hardware.gripper_q", 0.0);
-    declare_parameter<bool>("hardware.gripper_closed", false);
-    declare_parameter<int>("hardware.gripper_torque_limit", 200);
-    declare_parameter<double>("hardware.current_lsb_a", 0.0065);
-    const auto kt_nm_per_a = declare_parameter<std::vector<double>>("hardware.kt_nm_per_a", {1.0, 1.0, 1.0, 1.0, 1.0, 0.0});
-    if (!valid_kt(kt_nm_per_a)) {
-      throw std::invalid_argument("Invalid kt_nm_per_a gains");
-    }
-    declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
-    declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
-    declare_parameter<int>("hardware.bus.max_bus_fails", 3);
-    const auto k_servo = declare_parameter<std::vector<double>>("hardware.bridge.k_servo", {50.0, 90.0, 11.0, 50.0, 50.0, 50.0});
-    if (!strictly_positive(k_servo)) {
-      throw std::invalid_argument("Invalid k_servo gains");
-    }
-    declare_parameter<double>("hardware.bridge.max_lead_q", 0.12);
-    declare_parameter<int>("hardware.bridge.goal_speed", 40);
-  }
-
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
     try {
       const bool is_sim = get_parameter("is_sim").get_value<bool>();
@@ -414,6 +391,12 @@ public:
   }
 
   LifecycleNodeInterface::CallbackReturn on_activate(const rclcpp_lifecycle::State &state) override {
+    if (worker_failed_.load(std::memory_order_acquire)) {
+      RCLCPP_ERROR(get_logger(),
+                   "Control loop fault is still set (%s); cleanup before activating",
+                   worker_error_.c_str());
+      return LifecycleNodeInterface::CallbackReturn::FAILURE;
+    }
     if (control_thread_.joinable()) {
       RCLCPP_ERROR(get_logger(), "Control thread already running");
       return LifecycleNodeInterface::CallbackReturn::FAILURE;
@@ -447,6 +430,7 @@ public:
         mirror_worker_counters();
         drain_and_publish();
         log_dropped_samples();
+        log_worker_fault();
       });
       // --- start the control thread (this is the fixed-rate loop) ---
       dropped_count_.store(0, std::memory_order_relaxed);
@@ -498,17 +482,22 @@ public:
     if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
       return result;
     }
-    loop_.reset();
-    controller_.reset();
-    plant_.reset();
-    target_.clear();
-    target_eigen_.resize(0);
-    q_ref_.resize(0);
-    qdot_ref_.resize(0);
-    qddot_ref_.resize(0);
-    joint_pub_.reset();
-    metrics_pub_.reset();
-    publish_timer_.reset();
+    release_configured_resources();
+    return LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  }
+
+  // A failed activate while a worker fault is set ends in error processing.
+  // Release the configured backend so the node does not stay unconfigured
+  // with the hardware still held.
+  LifecycleNodeInterface::CallbackReturn on_error(const rclcpp_lifecycle::State &) override {
+    RCLCPP_ERROR(get_logger(), "Lifecycle error; releasing the configured backend");
+    if (joint_pub_ && joint_pub_->is_activated()) {
+      joint_pub_->on_deactivate();
+    }
+    if (metrics_pub_ && metrics_pub_->is_activated()) {
+      metrics_pub_->on_deactivate();
+    }
+    release_configured_resources();
     return LifecycleNodeInterface::CallbackReturn::SUCCESS;
   }
 
@@ -665,85 +654,94 @@ private:
   void control_loop() {
     const int active = active_workers_.fetch_add(1, std::memory_order_acq_rel) + 1;
     int seen = max_workers_.load(std::memory_order_relaxed);
-    while (active > seen &&
-           !max_workers_.compare_exchange_weak(
-               seen, active, std::memory_order_relaxed)) {
-    }
+    while (active > seen && !max_workers_.compare_exchange_weak( seen, active, std::memory_order_relaxed)) {}
     struct StopWorker {
       std::atomic<int>& active;
       ~StopWorker() { active.fetch_sub(1, std::memory_order_acq_rel); }
     } stop{active_workers_};
 
-    if (rt_enable_) {
-      arm_control::RtConfig cfg;
-      cfg.fifo_priority = rt_priority_;
-      cfg.cpu_affinity = rt_cpu_;
-      const arm_control::RtStatus rt = arm_control::configure_rt_thread(cfg);
+    try {
+      if (rt_enable_) {
+        arm_control::RtConfig cfg;
+        cfg.fifo_priority = rt_priority_;
+        cfg.cpu_affinity = rt_cpu_;
+        const arm_control::RtStatus rt = arm_control::configure_rt_thread(cfg);
+        std::fprintf(stderr,
+                     "rt: mlockall=%d fifo=%d affinity=%d cstates=%d\n",
+                     rt.memory_locked, rt.fifo_set, rt.affinity_set,
+                     rt.cstates_suppressed);
+        if (!rt.error.empty()) {
+          std::fprintf(stderr, "rt warnings: %s\n", rt.error.c_str());
+        }
+      }
+
+      const size_t jitter_cap =
+          jitter_samples_ > 0 ? static_cast<size_t>(jitter_samples_) : 0;
+      std::vector<int64_t> late_ns(jitter_cap);
+      size_t jitter_n = 0;
+
+      const auto period = std::chrono::duration<double>(1.0 / rate_hz_);
+      auto next = std::chrono::steady_clock::now();
+      arm_control::Sample s;  // reused; no per-iteration allocation
+      while (running_.load(std::memory_order_acquire)) {
+        if (reference_type_ == "smooth") {
+          minimum_jerk_reference(plant_->time(), target_eigen_, q_ref_,
+                                 qdot_ref_, qddot_ref_);
+          loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
+        }
+        loop_->step_once(s);
+        if (!ring_.push(s)) {
+          dropped_count_.fetch_add(1, std::memory_order_relaxed);
+        }
+        next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            period);
+        arm_control::sleep_until_monotonic(next);
+        if (jitter_n < jitter_cap) {
+          const auto now = std::chrono::steady_clock::now();
+          late_ns[jitter_n++] =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(now - next)
+                  .count();
+        }
+      }
+
+      if (jitter_n == 0) return;
+      int64_t min_ns = late_ns[0];
+      int64_t max_ns = late_ns[0];
+      long double sum = 0;
+      for (size_t i = 0; i < jitter_n; ++i) {
+        if (late_ns[i] < min_ns) min_ns = late_ns[i];
+        if (late_ns[i] > max_ns) max_ns = late_ns[i];
+        sum += static_cast<long double>(late_ns[i]);
+      }
       std::fprintf(stderr,
-                   "rt: mlockall=%d fifo=%d affinity=%d cstates=%d\n",
-                   rt.memory_locked, rt.fifo_set, rt.affinity_set,
-                   rt.cstates_suppressed);
-      if (!rt.error.empty()) {
-        std::fprintf(stderr, "rt warnings: %s\n", rt.error.c_str());
+                   "control jitter: n=%zu Min: %.3f Avg: %.3f Max: %.3f (us)\n",
+                   jitter_n, min_ns / 1000.0,
+                   static_cast<double>(sum / jitter_n) / 1000.0,
+                   max_ns / 1000.0);
+      if (jitter_csv_.empty()) return;
+      std::ofstream out(jitter_csv_);
+      if (!out) {
+        std::fprintf(stderr, "failed to write %s\n", jitter_csv_.c_str());
+        return;
       }
-    }
-
-    const size_t jitter_cap =
-        jitter_samples_ > 0 ? static_cast<size_t>(jitter_samples_) : 0;
-    std::vector<int64_t> late_ns(jitter_cap);
-    size_t jitter_n = 0;
-
-    const auto period = std::chrono::duration<double>(1.0 / rate_hz_);
-    auto next = std::chrono::steady_clock::now();
-    arm_control::Sample s;  // reused; no per-iteration allocation
-    while (running_.load(std::memory_order_acquire)) {
-      if (reference_type_ == "smooth") {
-        minimum_jerk_reference(plant_->time(), target_eigen_, q_ref_,
-                               qdot_ref_, qddot_ref_);
-        loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
+      out << "# rate_hz=" << rate_hz_ << "\n";
+      out << "i,late_us\n";
+      out.precision(9);
+      for (size_t i = 0; i < jitter_n; ++i) {
+        out << i << ',' << late_ns[i] / 1000.0 << '\n';
       }
-      loop_->step_once(s);
-      if (!ring_.push(s)) {
-        dropped_count_.fetch_add(1, std::memory_order_relaxed);
-      }
-      next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-          period);
-      arm_control::sleep_until_monotonic(next);
-      if (jitter_n < jitter_cap) {
-        const auto now = std::chrono::steady_clock::now();
-        late_ns[jitter_n++] =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - next)
-                .count();
-      }
+      std::fprintf(stderr, "wrote %s\n", jitter_csv_.c_str());
+    } catch (const std::exception& e) {
+      worker_error_ = e.what();
+      worker_failed_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      std::fprintf(stderr, "control loop stopped: %s\n", e.what());
+    } catch (...) {
+      worker_error_ = "unknown exception";
+      worker_failed_.store(true, std::memory_order_release);
+      running_.store(false, std::memory_order_release);
+      std::fprintf(stderr, "control loop stopped: unknown exception\n");
     }
-
-    if (jitter_n == 0) return;
-    int64_t min_ns = late_ns[0];
-    int64_t max_ns = late_ns[0];
-    long double sum = 0;
-    for (size_t i = 0; i < jitter_n; ++i) {
-      if (late_ns[i] < min_ns) min_ns = late_ns[i];
-      if (late_ns[i] > max_ns) max_ns = late_ns[i];
-      sum += static_cast<long double>(late_ns[i]);
-    }
-    std::fprintf(stderr,
-                 "control jitter: n=%zu Min: %.3f Avg: %.3f Max: %.3f (us)\n",
-                 jitter_n, min_ns / 1000.0,
-                 static_cast<double>(sum / jitter_n) / 1000.0,
-                 max_ns / 1000.0);
-    if (jitter_csv_.empty()) return;
-    std::ofstream out(jitter_csv_);
-    if (!out) {
-      std::fprintf(stderr, "failed to write %s\n", jitter_csv_.c_str());
-      return;
-    }
-    out << "# rate_hz=" << rate_hz_ << "\n";
-    out << "i,late_us\n";
-    out.precision(9);
-    for (size_t i = 0; i < jitter_n; ++i) {
-      out << i << ',' << late_ns[i] / 1000.0 << '\n';
-    }
-    std::fprintf(stderr, "wrote %s\n", jitter_csv_.c_str());
   }
 
   // Runs on the executor (non-RT) thread. Drains the ring and publishes the
@@ -778,6 +776,51 @@ private:
     m.estimated_payload_mass = s.estimated_payload_mass;
     m.sample_time = s.t;
     metrics_pub_->publish(m);
+  }
+
+  // Executor thread. The control thread stores the message, then sets the flag.
+  // The transition runs on a later timer tick so this callback is not inside
+  // on_deactivate while that function resets the publish timer.
+  void log_worker_fault() {
+    if (!worker_failed_.load(std::memory_order_acquire) || worker_fault_logged_) {
+      return;
+    }
+    worker_fault_logged_ = true;
+    RCLCPP_ERROR(get_logger(), "Control loop stopped: %s", worker_error_.c_str());
+    RCLCPP_ERROR(get_logger(), "Deactivating; cleanup before activating again");
+    fault_action_timer_ = create_wall_timer(1ms, [this]() {
+      fault_action_timer_.reset();
+      handle_worker_fault();
+    });
+  }
+
+  void handle_worker_fault() {
+    try {
+      if (get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+        trigger_transition(lifecycle_msgs::msg::Transition::TRANSITION_DEACTIVATE);
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(),
+                   "Failed to leave active after the control-loop fault: %s", e.what());
+    }
+  }
+
+  void release_configured_resources() {
+    loop_.reset();
+    controller_.reset();
+    plant_.reset();
+    target_.clear();
+    target_eigen_.resize(0);
+    q_ref_.resize(0);
+    qdot_ref_.resize(0);
+    qddot_ref_.resize(0);
+    joint_pub_.reset();
+    metrics_pub_.reset();
+    publish_timer_.reset();
+    fault_action_timer_.reset();
+    worker_failed_.store(false, std::memory_order_relaxed);
+    worker_fault_logged_ = false;
+    worker_error_.clear();
   }
 
   /// Executor thread diagnostics. Logs a warning if the number of dropped samples changes.
@@ -881,6 +924,30 @@ private:
     }
   }
 
+  inline void declare_hardware_parameters() {
+    declare_parameter<std::string>("hardware.port", "/dev/ttyACM0");
+    declare_parameter<int>("hardware.baud", 1000000);
+    declare_parameter<std::string>("hardware.calib_path", "so101_follower_calib.json");
+    declare_parameter<double>("hardware.home_duration", 4.0);
+    declare_parameter<double>("hardware.gripper_q", 0.0);
+    declare_parameter<bool>("hardware.gripper_closed", false);
+    declare_parameter<int>("hardware.gripper_torque_limit", 200);
+    declare_parameter<double>("hardware.current_lsb_a", 0.0065);
+    const auto kt_nm_per_a = declare_parameter<std::vector<double>>("hardware.kt_nm_per_a", {1.0, 1.0, 1.0, 1.0, 1.0, 0.0});
+    if (!valid_kt(kt_nm_per_a)) {
+      throw std::invalid_argument("Invalid kt_nm_per_a gains");
+    }
+    declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
+    declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
+    declare_parameter<int>("hardware.bus.max_bus_fails", 3);
+    const auto k_servo = declare_parameter<std::vector<double>>("hardware.bridge.k_servo", {50.0, 90.0, 11.0, 50.0, 50.0, 50.0});
+    if (!strictly_positive(k_servo)) {
+      throw std::invalid_argument("Invalid k_servo gains");
+    }
+    declare_parameter<double>("hardware.bridge.max_lead_q", 0.12);
+    declare_parameter<int>("hardware.bridge.goal_speed", 40);
+  }
+
   // Control core.
   std::unique_ptr<arm_control::PlantInterface> plant_;
   std::unique_ptr<arm_control::Controller> controller_;
@@ -902,6 +969,9 @@ private:
   arm_control::SpscRing<arm_control::Sample> ring_;
   std::thread control_thread_;
   std::atomic<bool> running_{false};
+  std::atomic<bool> worker_failed_{false};
+  std::string worker_error_;
+  bool worker_fault_logged_ = false;
   std::atomic<int> active_workers_{0};
   std::atomic<int> max_workers_{0};
   std::atomic<int> dropped_count_{0};
@@ -912,6 +982,7 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
   rclcpp_lifecycle::LifecyclePublisher<arm_msgs::msg::ArmMetrics>::SharedPtr metrics_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
+  rclcpp::TimerBase::SharedPtr fault_action_timer_;
 
   // param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;
