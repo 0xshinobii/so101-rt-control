@@ -18,12 +18,14 @@ from launch_ros.actions import Node
 from lifecycle_msgs.msg import State, Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 import pytest
-from rcl_interfaces.srv import GetParameters
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParametersAtomically
 import rclpy
 from rclpy.node import Node as RclpyNode
 
 NODE_NAME = "arm_control_node"
 BAD_NODE_NAME = "arm_control_bad_model"
+FAULT_NODE_NAME = "arm_control_fault_test"
 CYCLES = 20
 QUIET_WINDOW_SEC = 0.30
 OBSERVE_WINDOW_SEC = 0.40
@@ -72,9 +74,25 @@ def generate_test_description():
             "model_path": "/no/such/model.xml",
         }],
     )
+    fault = Node(
+        package="arm_control",
+        executable="arm_control_node",
+        name=FAULT_NODE_NAME,
+        output="screen",
+        parameters=[params, {
+            "is_sim": False,
+            "rt_enable": False,
+            "jitter_samples": 0,
+            "worker_counters": True,
+            "hardware.test_bus": True,
+            "hardware.port": "scripted",
+            "hardware.home_duration": 0.02,
+        }],
+    )
     return launch.LaunchDescription([
         dut,
         bad,
+        fault,
         launch_testing.actions.ReadyToTest(),
     ])
 
@@ -90,6 +108,9 @@ class _Client(RclpyNode):
         self._params = self.create_client(
             GetParameters, f"/{node_name}/get_parameters"
         )
+        self._set_params = self.create_client(
+            SetParametersAtomically, f"/{node_name}/set_parameters_atomically"
+        )
         self.sample_times = []
         if node_name == NODE_NAME:
             self.create_subscription(ArmMetrics, "arm_metrics", self._on_metrics, 10)
@@ -104,6 +125,8 @@ class _Client(RclpyNode):
             raise AssertionError(f"{self._node_name} get_state did not appear")
         if not self._params.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} get_parameters did not appear")
+        if not self._set_params.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
+            raise AssertionError(f"{self._node_name} set_parameters did not appear")
 
     def state_id(self):
         future = self._get.call_async(GetState.Request())
@@ -158,8 +181,12 @@ class _Client(RclpyNode):
         return len(self.sample_times) - start
 
     def worker_counts(self):
+        values = self.int_parameters(["active_workers", "max_workers"])
+        return values["active_workers"], values["max_workers"]
+
+    def int_parameters(self, names):
         request = GetParameters.Request()
-        request.names = ["active_workers", "max_workers"]
+        request.names = names
         future = self._params.call_async(request)
         rclpy.spin_until_future_complete(
             self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
@@ -167,9 +194,45 @@ class _Client(RclpyNode):
         if not future.done() or future.result() is None:
             raise AssertionError("get_parameters hung or returned nothing")
         values = future.result().values
-        if len(values) != 2:
-            raise AssertionError(f"expected 2 worker counters, got {len(values)}")
-        return values[0].integer_value, values[1].integer_value
+        if len(values) != len(names):
+            raise AssertionError(f"expected {len(names)} parameters, got {len(values)}")
+        return {name: value.integer_value for name, value in zip(names, values)}
+
+    def set_test_fault(self, mode, failure_limit=0):
+        request = SetParametersAtomically.Request()
+        request.parameters = [
+            Parameter(
+                name="test_bus.injection_mode",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_STRING,
+                    string_value=mode,
+                ),
+            ),
+            Parameter(
+                name="test_bus.failure_limit",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_INTEGER,
+                    integer_value=failure_limit,
+                ),
+            ),
+        ]
+        future = self._set_params.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("set_parameters hung or returned nothing")
+        result = future.result().result
+        if not result.successful:
+            raise AssertionError(f"fault injection rejected: {result.reason}")
+
+    def await_condition(self, predicate, timeout_sec, description):
+        deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
+        while self.get_clock().now() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if predicate():
+                return
+        raise AssertionError(f"timed out waiting for {description}")
 
 
 class TestArmControlLifecycle(unittest.TestCase):
@@ -264,6 +327,142 @@ class TestArmControlLifecycle(unittest.TestCase):
         active, peak = client.worker_counts()
         if active != 1 or peak != 1:
             raise AssertionError(f"active_workers={active} max_workers={peak}")
+
+    def test_scripted_bus_faults_and_recovery(self):
+        rclpy.init()
+        client = _Client(FAULT_NODE_NAME)
+        stat_names = [
+            "test_bus.failed_reads",
+            "test_bus.failed_command_writes",
+            "test_bus.successful_reads",
+            "test_bus.successful_command_writes",
+            "test_bus.torque_off_attempts",
+            "test_bus.torque_off_failures",
+        ]
+
+        def stats():
+            return client.int_parameters(stat_names)
+
+        def configure_and_activate():
+            client.transition(
+                Transition.TRANSITION_CONFIGURE,
+                State.PRIMARY_STATE_INACTIVE,
+                CONFIGURE_TIMEOUT_SEC,
+            )
+            client.transition(
+                Transition.TRANSITION_ACTIVATE,
+                State.PRIMARY_STATE_ACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.await_condition(
+                lambda: stats()["test_bus.successful_reads"] >= 5,
+                TRANSITION_TIMEOUT_SEC,
+                "five successful tracking reads",
+            )
+
+        def assert_fault_latched():
+            active, _peak = client.worker_counts()
+            self.assertEqual(active, 0)
+            client.transition(
+                Transition.TRANSITION_ACTIVATE,
+                State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+                expect_success=False,
+            )
+
+        try:
+            client.wait_ready()
+
+            # Two stale-state cycles recover, and both still deliver commands.
+            configure_and_activate()
+            before = stats()
+            client.set_test_fault("read_timeout", failure_limit=2)
+            client.await_condition(
+                lambda: stats()["test_bus.failed_reads"] == 2,
+                TRANSITION_TIMEOUT_SEC,
+                "two transient read timeouts",
+            )
+            client.await_condition(
+                lambda: stats()["test_bus.successful_reads"]
+                > before["test_bus.successful_reads"],
+                TRANSITION_TIMEOUT_SEC,
+                "read recovery",
+            )
+            recovered = stats()
+            self.assertGreaterEqual(
+                recovered["test_bus.successful_command_writes"],
+                before["test_bus.successful_command_writes"] + 2,
+            )
+            self.assertEqual(client.state_id(), State.PRIMARY_STATE_ACTIVE)
+            self.assertEqual(client.worker_counts()[0], 1)
+
+            # Three consecutive read failures stop the worker. Torque-off works
+            # because writes remain available in read-only timeout mode.
+            client.set_test_fault("none")
+            client.set_test_fault("read_timeout")
+            client.await_condition(
+                lambda: client.state_id() == State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+                "inactive state after read fault",
+            )
+            read_fault = stats()
+            self.assertEqual(read_fault["test_bus.failed_reads"], 5)
+            self.assertEqual(read_fault["test_bus.failed_command_writes"], 0)
+            self.assertEqual(read_fault["test_bus.torque_off_attempts"], 6)
+            self.assertEqual(read_fault["test_bus.torque_off_failures"], 0)
+            assert_fault_latched()
+
+            client.set_test_fault("none")
+            client.transition(
+                Transition.TRANSITION_CLEANUP,
+                State.PRIMARY_STATE_UNCONFIGURED,
+                TRANSITION_TIMEOUT_SEC,
+            )
+
+            # Combined timeouts produce three failed reads, two skipped command
+            # cycles with failed writes, and six separately reported torque-off
+            # failures.
+            configure_and_activate()
+            client.set_test_fault("read_write_timeout")
+            client.await_condition(
+                lambda: client.state_id() == State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+                "inactive state after combined fault",
+            )
+            combined = stats()
+            self.assertEqual(combined["test_bus.failed_reads"], 3)
+            self.assertEqual(combined["test_bus.failed_command_writes"], 2)
+            self.assertEqual(combined["test_bus.torque_off_attempts"], 6)
+            self.assertEqual(combined["test_bus.torque_off_failures"], 6)
+            successful_writes = combined["test_bus.successful_command_writes"]
+            client.spin_for(0.10)
+            self.assertEqual(
+                stats()["test_bus.successful_command_writes"], successful_writes
+            )
+            assert_fault_latched()
+
+            # Deliberate recovery creates exactly one replacement worker.
+            client.set_test_fault("none")
+            client.transition(
+                Transition.TRANSITION_CLEANUP,
+                State.PRIMARY_STATE_UNCONFIGURED,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            configure_and_activate()
+            self.assertEqual(client.worker_counts(), (1, 1))
+            client.transition(
+                Transition.TRANSITION_DEACTIVATE,
+                State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.transition(
+                Transition.TRANSITION_CLEANUP,
+                State.PRIMARY_STATE_UNCONFIGURED,
+                TRANSITION_TIMEOUT_SEC,
+            )
+        finally:
+            client.destroy_node()
+            rclpy.shutdown()
 
 
 @launch_testing.post_shutdown_test()

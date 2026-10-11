@@ -135,6 +135,20 @@ bool frozen_while_configured(const std::string& name) {
          name == "rate_hz" || name.rfind("hardware.", 0) == 0;
 }
 
+arm_control::ScriptedFeetechBus::FaultMode fault_mode(
+    const std::string& mode) {
+  if (mode == "none") {
+    return arm_control::ScriptedFeetechBus::FaultMode::kNone;
+  }
+  if (mode == "read_timeout") {
+    return arm_control::ScriptedFeetechBus::FaultMode::kReadTimeout;
+  }
+  if (mode == "read_write_timeout") {
+    return arm_control::ScriptedFeetechBus::FaultMode::kReadWriteTimeout;
+  }
+  throw std::invalid_argument("invalid test_bus.injection_mode: " + mode);
+}
+
 void validate_joint_calib(
     const std::array<arm_control::JointCalib, arm_control::kDof>& calib) {
   std::set<int> ids;
@@ -321,7 +335,12 @@ public:
         }
       } else {
         const auto hardware_config = make_hardware_config(rate_hz, urdf_path, target);
-        plant = std::make_unique<arm_control::HardwareBackend>(hardware_config);
+        std::unique_ptr<arm_control::FeetechBusInterface> bus;
+        if (get_parameter("hardware.test_bus").get_value<bool>()) {
+          bus = std::make_unique<arm_control::ScriptedFeetechBus>();
+        }
+        plant = std::make_unique<arm_control::HardwareBackend>(
+            hardware_config, std::move(bus));
       }
 
       const double reference_payload_mass = get_parameter("reference_payload_mass").get_value<double>();
@@ -375,6 +394,7 @@ public:
 
       joint_pub_ = std::move(joint_pub);
       metrics_pub_ = std::move(metrics_pub);
+      mirror_test_bus_stats();
 
       RCLCPP_INFO(get_logger(),
                   "arm_control_node configured: is_sim=%d model=%s controller=%s rate=%.0f Hz",
@@ -428,6 +448,7 @@ public:
       // --- non-RT drain+publish timer on the executor thread ---
       publish_timer_ = create_wall_timer(20ms, [this]() {
         mirror_worker_counters();
+        mirror_test_bus_stats();
         drain_and_publish();
         log_dropped_samples();
         log_worker_fault();
@@ -467,6 +488,7 @@ public:
       previous_dropped_count_ = 0;
     }
     mirror_worker_counters();
+    mirror_test_bus_stats();
     // discard the ring so that its empty for the next activation
     arm_control::Sample s;
     while (ring_.pop(s)) { /* do nothing */ }
@@ -642,11 +664,13 @@ private:
                               calib[static_cast<size_t>(i)]);
     }
 
-    try {
-      arm_control::FeetechBus probe;
-      probe.open(cfg.port, cfg.baud);
-    } catch (const std::exception& e) {
-      throw std::invalid_argument(std::string("hardware.port: ") + e.what());
+    if (!get_parameter("hardware.test_bus").get_value<bool>()) {
+      try {
+        arm_control::FeetechBus probe;
+        probe.open(cfg.port, cfg.baud);
+      } catch (const std::exception& e) {
+        throw std::invalid_argument(std::string("hardware.port: ") + e.what());
+      }
     }
     return cfg;
   }
@@ -883,6 +907,28 @@ private:
         "max_workers", max_workers_.load(std::memory_order_relaxed)));
   }
 
+  void mirror_test_bus_stats() {
+    auto* hardware =
+        dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
+    if (hardware == nullptr || !hardware->supports_fault_injection()) return;
+    const auto stats = hardware->test_fault_stats();
+    set_parameters({
+        rclcpp::Parameter("test_bus.failed_reads",
+                          static_cast<int64_t>(stats.failed_reads)),
+        rclcpp::Parameter("test_bus.failed_command_writes",
+                          static_cast<int64_t>(stats.failed_command_writes)),
+        rclcpp::Parameter("test_bus.successful_reads",
+                          static_cast<int64_t>(stats.successful_reads)),
+        rclcpp::Parameter("test_bus.successful_command_writes",
+                          static_cast<int64_t>(
+                              stats.successful_command_writes)),
+        rclcpp::Parameter("test_bus.torque_off_attempts",
+                          static_cast<int64_t>(stats.torque_off_attempts)),
+        rclcpp::Parameter("test_bus.torque_off_failures",
+                          static_cast<int64_t>(stats.torque_off_failures)),
+    });
+  }
+
   rcl_interfaces::msg::SetParametersResult on_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
@@ -930,6 +976,22 @@ private:
         }
       }
 
+      if (param.get_name() == "test_bus.injection_mode") {
+        try {
+          (void)fault_mode(param.as_string());
+        } catch (const std::exception& e) {
+          result.successful = false;
+          result.reason = e.what();
+          break;
+        }
+      }
+      if (param.get_name() == "test_bus.failure_limit" &&
+          param.as_int() < 0) {
+        result.successful = false;
+        result.reason = "test_bus.failure_limit must be nonnegative";
+        break;
+      }
+
       // param controller_type is only allowed to be set when node is unconfigured
       if (param.get_name() == "controller_type") {
         if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED) {
@@ -943,7 +1005,12 @@ private:
   }
 
   void on_post_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
+    bool injection_changed = false;
     for (const auto &param : parameters) {
+      if (param.get_name() == "test_bus.injection_mode" ||
+          param.get_name() == "test_bus.failure_limit") {
+        injection_changed = true;
+      }
       if (param.get_name() != "kp" && param.get_name() != "kd") {
         continue;
       }
@@ -958,6 +1025,16 @@ private:
           return;
         }
         pd->set_gains(to_eigen(current_kp), to_eigen(current_kd));
+      }
+    }
+    if (injection_changed) {
+      auto* hardware =
+          dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
+      if (hardware != nullptr && hardware->supports_fault_injection()) {
+        hardware->inject_bus_fault(
+            fault_mode(get_parameter("test_bus.injection_mode").as_string()),
+            static_cast<uint64_t>(
+                get_parameter("test_bus.failure_limit").as_int()));
       }
     }
   }
@@ -978,6 +1055,15 @@ private:
     declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
     declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
     declare_parameter<int>("hardware.bus.max_bus_fails", 3);
+    declare_parameter<bool>("hardware.test_bus", false);
+    declare_parameter<std::string>("test_bus.injection_mode", "none");
+    declare_parameter<int>("test_bus.failure_limit", 0);
+    declare_parameter<int>("test_bus.failed_reads", 0);
+    declare_parameter<int>("test_bus.failed_command_writes", 0);
+    declare_parameter<int>("test_bus.successful_reads", 0);
+    declare_parameter<int>("test_bus.successful_command_writes", 0);
+    declare_parameter<int>("test_bus.torque_off_attempts", 0);
+    declare_parameter<int>("test_bus.torque_off_failures", 0);
     const auto k_servo = declare_parameter<std::vector<double>>("hardware.bridge.k_servo", {50.0, 90.0, 11.0, 50.0, 50.0, 50.0});
     if (!strictly_positive(k_servo)) {
       throw std::invalid_argument("Invalid k_servo gains");

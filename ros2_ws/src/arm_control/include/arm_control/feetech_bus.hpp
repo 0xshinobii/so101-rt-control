@@ -15,7 +15,29 @@ struct FeetechStats {
   uint64_t timeouts = 0;
 };
 
-class FeetechBus {
+class FeetechBusInterface {
+public:
+  virtual ~FeetechBusInterface() = default;
+
+  virtual void open(const std::string& device, int baud) = 0;
+  virtual void close() = 0;
+  virtual bool is_open() const = 0;
+  virtual bool ping(uint8_t id) = 0;
+  virtual bool read(uint8_t id, uint8_t addr, uint8_t length,
+                    uint8_t* out) = 0;
+  virtual bool write(uint8_t id, uint8_t addr, const uint8_t* data,
+                     uint8_t length) = 0;
+  virtual bool sync_read(const std::vector<uint8_t>& ids, uint8_t addr,
+                         uint8_t length, std::vector<uint8_t>& out) = 0;
+  virtual bool sync_write(const std::vector<uint8_t>& ids, uint8_t addr,
+                          const std::vector<uint8_t>& data) = 0;
+  virtual FeetechStats stats() const = 0;
+  virtual void reset_stats() = 0;
+  virtual void set_rx_timeout_ns(int64_t ns) = 0;
+  virtual void set_tx_timeout_ns(int64_t ns) = 0;
+};
+
+class FeetechBus : public FeetechBusInterface {
 public:
   static constexpr uint8_t kInstPing = 1;
   static constexpr uint8_t kInstRead = 2;
@@ -32,32 +54,33 @@ public:
   static constexpr uint8_t kAddrPresentCurrent = 69;  // 2 B, sign-magnitude, 6.5 mA/LSB
 
   FeetechBus() = default;
-  ~FeetechBus();
+  ~FeetechBus() override;
   FeetechBus(const FeetechBus&) = delete;
   FeetechBus& operator=(const FeetechBus&) = delete;
 
   // Termios rates this bus can program. Not every rate the servo accepts.
   static bool baud_supported(int baud);
 
-  void open(const std::string& device, int baud);
-  void close();
-  bool is_open() const { return fd_ >= 0; }
+  void open(const std::string& device, int baud) override;
+  void close() override;
+  bool is_open() const override { return fd_ >= 0; }
 
-  bool ping(uint8_t id);
-  bool read(uint8_t id, uint8_t addr, uint8_t length, uint8_t* out);
-  bool write(uint8_t id, uint8_t addr, const uint8_t* data, uint8_t length);
+  bool ping(uint8_t id) override;
+  bool read(uint8_t id, uint8_t addr, uint8_t length, uint8_t* out) override;
+  bool write(uint8_t id, uint8_t addr, const uint8_t* data,
+             uint8_t length) override;
   bool sync_read(const std::vector<uint8_t>& ids, uint8_t addr, uint8_t length,
-                 std::vector<uint8_t>& out);
+                 std::vector<uint8_t>& out) override;
   bool sync_write(const std::vector<uint8_t>& ids, uint8_t addr,
-                  const std::vector<uint8_t>& data);
+                  const std::vector<uint8_t>& data) override;
 
-  const FeetechStats& stats() const { return stats_; }
-  void reset_stats() { stats_ = {}; }
+  FeetechStats stats() const override { return stats_; }
+  void reset_stats() override { stats_ = {}; }
 
   // Deadline budget for one complete request/response transaction [ns].
-  void set_rx_timeout_ns(int64_t ns) { rx_timeout_ns_ = ns; }
+  void set_rx_timeout_ns(int64_t ns) override { rx_timeout_ns_ = ns; }
   // Deadline budget for a broadcast write with no status response [ns].
-  void set_tx_timeout_ns(int64_t ns) { tx_timeout_ns_ = ns; }
+  void set_tx_timeout_ns(int64_t ns) override { tx_timeout_ns_ = ns; }
 
 private:
   bool wait_ready(short events, int64_t deadline_ns);

@@ -44,10 +44,12 @@ int64_t monotonic_ns() {
 
 }  // namespace
 
-HardwareBackend::HardwareBackend(Config cfg)
+HardwareBackend::HardwareBackend(Config cfg,
+                                 std::unique_ptr<FeetechBusInterface> bus)
     : cfg_(std::move(cfg)),
       dynamics_(std::make_unique<PinocchioDynamics>(cfg_.urdf_path)),
       calib_(load_so101_calib(cfg_.calib_path)),
+      bus_(bus ? std::move(bus) : std::make_unique<FeetechBus>()),
       q_(Eigen::VectorXd::Zero(kDof)),
       qdot_(Eigen::VectorXd::Zero(kDof)),
       q_cmd_(Eigen::VectorXd::Zero(kDof)),
@@ -61,9 +63,9 @@ HardwareBackend::HardwareBackend(Config cfg)
   tx_buf_.assign(2 * kDof, 0);
   ids_.resize(kDof);
   for (int i = 0; i < kDof; ++i) ids_[i] = static_cast<uint8_t>(calib_[i].id);
-  bus_.open(cfg_.port, cfg_.baud);
-  bus_.set_rx_timeout_ns(cfg_.rx_timeout_ns);
-  bus_.set_tx_timeout_ns(cfg_.tx_timeout_ns);
+  bus_->open(cfg_.port, cfg_.baud);
+  bus_->set_rx_timeout_ns(cfg_.rx_timeout_ns);
+  bus_->set_tx_timeout_ns(cfg_.tx_timeout_ns);
   if (cfg_.gripper_closed) {
     const auto& g = calib_[5];
     gripper_hold_tick_ = g.min_ticks;
@@ -76,7 +78,7 @@ HardwareBackend::HardwareBackend(Config cfg)
               cfg_.gripper_torque_limit,
               cfg_.gripper_closed ? " (min_ticks)" : "");
   for (int i = 0; i < kDof; ++i) {
-    if (!bus_.ping(ids_[i])) {
+    if (!bus_->ping(ids_[i])) {
       throw std::runtime_error("ping failed for id " +
                                std::to_string(ids_[i]));
     }
@@ -111,11 +113,17 @@ void HardwareBackend::fail_bus(const char* what, int& consecutive_failures) {
 }
 
 void HardwareBackend::disable_torque() {
-  bus_.set_rx_timeout_ns(cfg_.rx_timeout_ns);
-  bus_.set_tx_timeout_ns(cfg_.tx_timeout_ns);
+  bus_->set_rx_timeout_ns(cfg_.rx_timeout_ns);
+  bus_->set_tx_timeout_ns(cfg_.tx_timeout_ns);
   const uint8_t off = 0;
   for (uint8_t id : ids_) {
-    bus_.write(id, FeetechBus::kAddrTorqueEnable, &off, 1);
+    torque_off_attempts_.fetch_add(1, std::memory_order_relaxed);
+    if (!bus_->write(id, FeetechBus::kAddrTorqueEnable, &off, 1)) {
+      torque_off_failures_.fetch_add(1, std::memory_order_relaxed);
+      std::fprintf(stderr, "torque_off write failed id=%u monotonic_ns=%lld\n",
+                   static_cast<unsigned>(id),
+                   static_cast<long long>(monotonic_ns()));
+    }
   }
 }
 
@@ -130,7 +138,7 @@ void HardwareBackend::enable_torque_at_current() {
   set_torque_limit(1000);
   for (uint8_t id : ids_) {
     const uint8_t on = 1;
-    if (!bus_.write(id, FeetechBus::kAddrTorqueEnable, &on, 1)) {
+    if (!bus_->write(id, FeetechBus::kAddrTorqueEnable, &on, 1)) {
       throw std::runtime_error("torque enable failed");
     }
   }
@@ -146,7 +154,7 @@ void HardwareBackend::set_torque_limit(uint16_t limit) {
   const uint8_t grip[2] = {static_cast<uint8_t>(g_lim & 0xFF),
                            static_cast<uint8_t>((g_lim >> 8) & 0xFF)};
   for (int i = 0; i < kDof; ++i) {
-    bus_.write(ids_[i], FeetechBus::kAddrTorqueLimit,
+    bus_->write(ids_[i], FeetechBus::kAddrTorqueLimit,
                (i == 5) ? grip : arm, 2);
   }
 }
@@ -168,13 +176,13 @@ void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {
   const uint8_t sp[2] = {static_cast<uint8_t>(speed & 0xFF),
                          static_cast<uint8_t>((speed >> 8) & 0xFF)};
   for (uint8_t id : ids_) {
-    bus_.write(id, kAddrAcceleration, &acc, 1);
-    bus_.write(id, kAddrGoalSpeed, sp, 2);
+    bus_->write(id, kAddrAcceleration, &acc, 1);
+    bus_->write(id, kAddrGoalSpeed, sp, 2);
   }
 }
 
 bool HardwareBackend::read_ticks(std::array<int, kDof>& ticks) {
-  if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentPosition, 2, rx_buf_) ||
+  if (!bus_->sync_read(ids_, FeetechBus::kAddrPresentPosition, 2, rx_buf_) ||
       rx_buf_.size() < 12) {
     return false;
   }
@@ -193,7 +201,7 @@ bool HardwareBackend::write_ticks(const std::array<int, kDof>& ticks) {
     data[2 * i] = static_cast<uint8_t>(t & 0xFF);
     data[2 * i + 1] = static_cast<uint8_t>((t >> 8) & 0xFF);
   }
-  return bus_.sync_write(ids_, FeetechBus::kAddrGoalPosition, data);
+  return bus_->sync_write(ids_, FeetechBus::kAddrGoalPosition, data);
 }
 
 void HardwareBackend::ticks_to_q(const std::array<int, kDof>& ticks,
@@ -217,7 +225,7 @@ int HardwareBackend::q_to_tick(int joint, double q) const {
 
 void HardwareBackend::read_state(Eigen::VectorXd& q, Eigen::VectorXd& qdot) {
   begin_io_cycle();
-  bus_.set_rx_timeout_ns(capped_timeout_ns(cfg_.rx_timeout_ns));
+  bus_->set_rx_timeout_ns(capped_timeout_ns(cfg_.rx_timeout_ns));
   std::array<int, kDof> ticks{};
   if (!read_ticks(ticks)) {
     // Returning the previous state keeps the loop alive, but the caller will
@@ -274,7 +282,7 @@ void HardwareBackend::apply_torque(const Eigen::VectorXd& tau) {
   }
   q_cmd_[5] = cfg_.gripper_q;  // the jaw is held, never driven by tau
   have_q_cmd_ = true;
-  bus_.set_tx_timeout_ns(capped_timeout_ns(cfg_.tx_timeout_ns));
+  bus_->set_tx_timeout_ns(capped_timeout_ns(cfg_.tx_timeout_ns));
   for (int i = 0; i < kDof; ++i) ticks[i] = q_to_tick(i, q_cmd_[i]);
   if (!write_ticks(ticks)) {
     ++failed_writes_;
@@ -292,9 +300,44 @@ HardwareBackend::RunHealth HardwareBackend::health() const {
   h.lead_saturations = lead_saturations_;
   h.late_ticks = late_ticks_;
   h.max_late_us = static_cast<double>(max_late_ns_) / 1000.0;
-  h.bus_timeouts = bus_.stats().timeouts;
-  h.bus_checksum_errors = bus_.stats().checksum_errors;
+  const auto bus_stats = bus_->stats();
+  h.bus_timeouts = bus_stats.timeouts;
+  h.bus_checksum_errors = bus_stats.checksum_errors;
+  h.torque_off_attempts =
+      torque_off_attempts_.load(std::memory_order_relaxed);
+  h.torque_off_failures =
+      torque_off_failures_.load(std::memory_order_relaxed);
   return h;
+}
+
+bool HardwareBackend::supports_fault_injection() const {
+  return dynamic_cast<ScriptedFeetechBus*>(bus_.get()) != nullptr;
+}
+
+void HardwareBackend::inject_bus_fault(ScriptedFeetechBus::FaultMode mode,
+                                       uint64_t failure_limit) {
+  auto* scripted = dynamic_cast<ScriptedFeetechBus*>(bus_.get());
+  if (scripted == nullptr) {
+    throw std::logic_error("bus does not support fault injection");
+  }
+  scripted->inject(mode, failure_limit);
+}
+
+HardwareBackend::TestFaultStats HardwareBackend::test_fault_stats() const {
+  TestFaultStats result;
+  const auto* scripted = dynamic_cast<const ScriptedFeetechBus*>(bus_.get());
+  if (scripted != nullptr) {
+    const auto stats = scripted->fault_stats();
+    result.failed_reads = stats.failed_reads;
+    result.failed_command_writes = stats.failed_sync_writes;
+    result.successful_reads = stats.successful_reads;
+    result.successful_command_writes = stats.successful_sync_writes;
+  }
+  result.torque_off_attempts =
+      torque_off_attempts_.load(std::memory_order_relaxed);
+  result.torque_off_failures =
+      torque_off_failures_.load(std::memory_order_relaxed);
+  return result;
 }
 
 void HardwareBackend::reset_health() {
@@ -306,7 +349,9 @@ void HardwareBackend::reset_health() {
   max_late_ns_ = 0;
   read_bus_fails_ = 0;
   write_bus_fails_ = 0;
-  bus_.reset_stats();
+  torque_off_attempts_.store(0, std::memory_order_relaxed);
+  torque_off_failures_.store(0, std::memory_order_relaxed);
+  bus_->reset_stats();
 }
 
 void HardwareBackend::gravity(const Eigen::VectorXd& q,
@@ -397,7 +442,7 @@ void HardwareBackend::move_to(const Eigen::VectorXd& q_end_in, double duration) 
 bool HardwareBackend::read_current_amps(Eigen::VectorXd& amps) {
   amps.resize(kDof);
   std::vector<uint8_t> raw;
-  if (!bus_.sync_read(ids_, FeetechBus::kAddrPresentCurrent, 2, raw) ||
+  if (!bus_->sync_read(ids_, FeetechBus::kAddrPresentCurrent, 2, raw) ||
       raw.size() < 12) {
     return false;
   }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -11,6 +12,7 @@
 
 #include "arm_control/feetech_bus.hpp"
 #include "arm_control/plant_interface.hpp"
+#include "arm_control/scripted_feetech_bus.hpp"
 #include "arm_control/so101_calib.hpp"
 
 namespace arm_control {
@@ -42,7 +44,8 @@ public:
     std::array<double, kDof> kt_nm_per_a = {1.0, 1.0, 1.0, 1.0, 1.0, 0.0};
   };
 
-  explicit HardwareBackend(Config cfg);
+  explicit HardwareBackend(
+      Config cfg, std::unique_ptr<FeetechBusInterface> bus = nullptr);
   ~HardwareBackend() override;
 
   HardwareBackend(const HardwareBackend&) = delete;
@@ -74,9 +77,24 @@ public:
     double max_late_us = 0.0; // worst overrun
     uint64_t bus_timeouts = 0;
     uint64_t bus_checksum_errors = 0;
+    uint64_t torque_off_attempts = 0;
+    uint64_t torque_off_failures = 0;
   };
   RunHealth health() const;
   void reset_health();
+
+  struct TestFaultStats {
+    uint64_t failed_reads = 0;
+    uint64_t failed_command_writes = 0;
+    uint64_t successful_reads = 0;
+    uint64_t successful_command_writes = 0;
+    uint64_t torque_off_attempts = 0;
+    uint64_t torque_off_failures = 0;
+  };
+  bool supports_fault_injection() const;
+  void inject_bus_fault(ScriptedFeetechBus::FaultMode mode,
+                        uint64_t failure_limit = 0);
+  TestFaultStats test_fault_stats() const;
 
   double gripper_q() const { return cfg_.gripper_q; }
   int dof() const override { return kDof; }
@@ -103,7 +121,7 @@ private:
   std::unique_ptr<PinocchioDynamics> dynamics_;
   std::array<JointCalib, kDof> calib_{};
   std::vector<uint8_t> ids_;
-  FeetechBus bus_;
+  std::unique_ptr<FeetechBusInterface> bus_;
   Eigen::VectorXd q_;
   Eigen::VectorXd qdot_;
   Eigen::VectorXd q_cmd_;
@@ -127,6 +145,8 @@ private:
   bool period_armed_ = false;
   std::chrono::steady_clock::time_point next_wakeup_{};
   int64_t cycle_deadline_ns_ = 0;
+  std::atomic<uint64_t> torque_off_attempts_{0};
+  std::atomic<uint64_t> torque_off_failures_{0};
 };
 
 }  // namespace arm_control

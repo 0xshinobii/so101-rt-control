@@ -375,7 +375,9 @@ int main(int argc, char** argv) {
         << " late_ticks=" << health.late_ticks
         << " max_late_us=" << health.max_late_us
         << " bus_timeouts=" << health.bus_timeouts
-        << " bus_checksum_errors=" << health.bus_checksum_errors << "\n";
+        << " bus_checksum_errors=" << health.bus_checksum_errors
+        << " torque_off_attempts=" << health.torque_off_attempts
+        << " torque_off_failures=" << health.torque_off_failures << "\n";
     out << "t";
     for (int i = 0; i < kDof; ++i) out << ",q" << i;
     for (int i = 0; i < kDof; ++i) out << ",qd" << i;
@@ -401,14 +403,16 @@ int main(int argc, char** argv) {
     std::printf(
         "run health  stale_reads=%d  failed_writes=%d  tick_clamps=%d  "
         "lead_saturations=%d  late_ticks=%d (max %.1f us)  bus_timeouts=%llu  "
-        "checksum_errors=%llu\n",
+        "checksum_errors=%llu  torque_off=%llu/%llu failed\n",
         health.stale_reads, health.failed_writes, health.tick_clamps,
         health.lead_saturations, health.late_ticks, health.max_late_us,
         static_cast<unsigned long long>(health.bus_timeouts),
-        static_cast<unsigned long long>(health.bus_checksum_errors));
+        static_cast<unsigned long long>(health.bus_checksum_errors),
+        static_cast<unsigned long long>(health.torque_off_failures),
+        static_cast<unsigned long long>(health.torque_off_attempts));
     if (health.stale_reads || health.failed_writes || health.tick_clamps ||
         health.lead_saturations || health.late_ticks || health.bus_timeouts ||
-        health.bus_checksum_errors) {
+        health.bus_checksum_errors || health.torque_off_failures) {
       std::fprintf(stderr,
                    "warning: this run is not clean — a stale read duplicates "
                    "a sample, a failed write leaves the previous command in "

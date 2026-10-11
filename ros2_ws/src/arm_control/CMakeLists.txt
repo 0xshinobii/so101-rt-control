@@ -37,6 +37,7 @@ add_library(arm_core
   src/mujoco_backend.cpp
   src/hardware_backend.cpp
   src/feetech_bus.cpp
+  src/scripted_feetech_bus.cpp
   src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
   src/computed_torque_controller.cpp
@@ -100,6 +101,7 @@ add_executable(gravity_id
   src/gravity_id.cpp
   src/hardware_backend.cpp
   src/feetech_bus.cpp
+  src/scripted_feetech_bus.cpp
   src/pinocchio_dynamics.cpp
 )
 target_include_directories(gravity_id PRIVATE include)
@@ -112,6 +114,7 @@ add_executable(hardware_run
   src/control_loop.cpp
   src/hardware_backend.cpp
   src/feetech_bus.cpp
+  src/scripted_feetech_bus.cpp
   src/pinocchio_dynamics.cpp
   src/pd_controller.cpp
   src/computed_torque_controller.cpp
