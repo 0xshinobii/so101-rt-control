@@ -1,0 +1,5 @@
+float64[5] position
+float64 duration
+---
+bool success
+string message

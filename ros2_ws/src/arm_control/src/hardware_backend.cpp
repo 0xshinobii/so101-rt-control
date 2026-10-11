@@ -435,6 +435,31 @@ void HardwareBackend::reset() {
   write_bus_fails_ = 0;
 }
 
+void HardwareBackend::move_to_operator(const Eigen::VectorXd& q_end,
+                                       double duration) {
+  if (q_end.size() != kDof || !std::isfinite(duration) || duration <= 0.0) {
+    throw std::invalid_argument(
+        "operator move requires six joints and a positive finite duration");
+  }
+  for (int joint = 0; joint < kDof - 1; ++joint) {
+    if (!std::isfinite(q_end[joint])) {
+      throw std::invalid_argument("operator move contains a non-finite joint");
+    }
+    const auto& calibration = calib_[joint];
+    const int tick =
+        calibration.zero_ticks +
+        static_cast<int>(
+            std::lround(calibration.sign * q_end[joint] / kRadPerTick));
+    if (tick < calibration.min_ticks || tick > calibration.max_ticks) {
+      throw std::invalid_argument("operator move exceeds calibrated limits");
+    }
+  }
+  enable_torque_at_current();
+  set_motion_profile(30, 0);
+  set_torque_limit(1000);
+  move_to(q_end, duration);
+}
+
 void HardwareBackend::move_to(const Eigen::VectorXd& q_end_in, double duration) {
   if (q_end_in.size() != kDof) {
     throw std::invalid_argument("q size");

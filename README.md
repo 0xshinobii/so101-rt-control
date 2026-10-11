@@ -497,6 +497,11 @@ ros2 launch arm_bringup arm_control.launch.py   # SCHED_FIFO needs CAP_SYS_NICE
 #   ros2 service call /arm_control_node/set_gripper std_srvs/srv/SetBool \
 #       "{data: true}"                      # close and hold
 #
+#   # Arm motion commands are also inactive-only; gripper hold is preserved:
+#   ros2 service call /arm_control_node/home_arm std_srvs/srv/Trigger "{}"
+#   ros2 service call /arm_control_node/move_arm arm_msgs/srv/MoveArm \
+#       "{position: [0.3, 0.4, -0.5, 0.2, 0.1], duration: 2.0}"
+#
 #   ros2 param set /arm_control_node experiment.payload_g 180.0
 #   ros2 param set /arm_control_node controller_type pd
 #   ros2 lifecycle set /arm_control_node activate

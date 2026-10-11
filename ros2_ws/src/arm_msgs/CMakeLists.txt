@@ -7,6 +7,7 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmMetrics.msg"
+  "srv/MoveArm.srv"
   DEPENDENCIES std_msgs
 )
 

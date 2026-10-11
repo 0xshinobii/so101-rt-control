@@ -56,6 +56,8 @@ public:
   void apply_torque(const Eigen::VectorXd& tau) override;
   void gravity(const Eigen::VectorXd& q, Eigen::VectorXd& tau) const;
   void move_to(const Eigen::VectorXd& q_end, double duration);
+  // Non-RT operator motion used while the lifecycle node is inactive.
+  void move_to_operator(const Eigen::VectorXd& q_end, double duration);
   void set_motion_profile(uint8_t acc, uint16_t speed);
   // Operator command used while the lifecycle node is inactive. Closing holds
   // the calibrated minimum tick; opening returns to Config::gripper_q.

@@ -10,6 +10,7 @@ import os
 import unittest
 
 from arm_msgs.msg import ArmMetrics
+from arm_msgs.srv import MoveArm
 import launch
 import launch_testing
 import launch_testing.actions
@@ -22,7 +23,7 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParametersAtomically
 import rclpy
 from rclpy.node import Node as RclpyNode
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 NODE_NAME = "arm_control_node"
 BAD_NODE_NAME = "arm_control_bad_model"
@@ -113,6 +114,8 @@ class _Client(RclpyNode):
             SetParametersAtomically, f"/{node_name}/set_parameters_atomically"
         )
         self._gripper = self.create_client(SetBool, f"/{node_name}/set_gripper")
+        self._home = self.create_client(Trigger, f"/{node_name}/home_arm")
+        self._move = self.create_client(MoveArm, f"/{node_name}/move_arm")
         self.sample_times = []
         if node_name == NODE_NAME:
             self.create_subscription(ArmMetrics, "arm_metrics", self._on_metrics, 10)
@@ -131,6 +134,10 @@ class _Client(RclpyNode):
             raise AssertionError(f"{self._node_name} set_parameters did not appear")
         if not self._gripper.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} set_gripper did not appear")
+        if not self._home.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
+            raise AssertionError(f"{self._node_name} home_arm did not appear")
+        if not self._move.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
+            raise AssertionError(f"{self._node_name} move_arm did not appear")
 
     def state_id(self):
         future = self._get.call_async(GetState.Request())
@@ -266,6 +273,35 @@ class _Client(RclpyNode):
                 f"expected {expect_success}: {future.result().message}"
             )
 
+    def home_arm(self, expect_success=True):
+        future = self._home.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("home_arm hung or returned nothing")
+        if future.result().success != expect_success:
+            raise AssertionError(
+                f"home_arm success={future.result().success}, "
+                f"expected {expect_success}: {future.result().message}"
+            )
+
+    def move_arm(self, position, duration, expect_success=True):
+        request = MoveArm.Request()
+        request.position = position
+        request.duration = duration
+        future = self._move.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("move_arm hung or returned nothing")
+        if future.result().success != expect_success:
+            raise AssertionError(
+                f"move_arm success={future.result().success}, "
+                f"expected {expect_success}: {future.result().message}"
+            )
+
     def await_condition(self, predicate, timeout_sec, description):
         deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
         while self.get_clock().now() < deadline:
@@ -396,12 +432,16 @@ class TestArmControlLifecycle(unittest.TestCase):
             )
             client.set_gripper(True)
             client.set_gripper(False)
+            client.home_arm()
+            client.move_arm([0.05, 0.05, -0.05, 0.05, 0.05], 0.02)
             client.transition(
                 Transition.TRANSITION_ACTIVATE,
                 State.PRIMARY_STATE_ACTIVE,
                 TRANSITION_TIMEOUT_SEC,
             )
             client.set_gripper(True, expect_success=False)
+            client.home_arm(expect_success=False)
+            client.move_arm([0.0] * 5, 0.02, expect_success=False)
             client.await_condition(
                 lambda: stats()["test_bus.successful_reads"] >= 5,
                 TRANSITION_TIMEOUT_SEC,

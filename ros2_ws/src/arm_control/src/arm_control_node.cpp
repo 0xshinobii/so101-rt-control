@@ -31,6 +31,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include "arm_control/adaptive_computed_torque_controller.hpp"
 #include "arm_control/arm_types.hpp"
@@ -47,6 +48,7 @@
 #include "arm_control/rt_thread.hpp"
 #include "arm_control/spsc_ring.hpp"
 #include "arm_msgs/msg/arm_metrics.hpp"
+#include "arm_msgs/srv/move_arm.hpp"
 
 using namespace std::chrono_literals;
 
@@ -288,6 +290,18 @@ public:
         [this](const std_srvs::srv::SetBool::Request::SharedPtr request,
                std_srvs::srv::SetBool::Response::SharedPtr response) {
           set_gripper(request->data, *response);
+        });
+    home_service_ = create_service<std_srvs::srv::Trigger>(
+        "~/home_arm",
+        [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+               std_srvs::srv::Trigger::Response::SharedPtr response) {
+          home_arm(*response);
+        });
+    move_service_ = create_service<arm_msgs::srv::MoveArm>(
+        "~/move_arm",
+        [this](const arm_msgs::srv::MoveArm::Request::SharedPtr request,
+               arm_msgs::srv::MoveArm::Response::SharedPtr response) {
+          move_arm(*request, *response);
         });
   }
 
@@ -981,23 +995,68 @@ private:
 
   void set_gripper(bool closed,
                    std_srvs::srv::SetBool::Response& response) {
-    if (get_current_state().id() !=
-        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
-      response.success = false;
-      response.message = "gripper command requires inactive lifecycle state";
-      return;
-    }
-    auto* hardware =
-        dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
+    auto* hardware = inactive_hardware(response.message);
     if (hardware == nullptr) {
       response.success = false;
-      response.message = "gripper command requires configured hardware";
       return;
     }
     try {
       hardware->set_gripper_closed(closed);
       response.success = true;
       response.message = closed ? "gripper closed" : "gripper opened";
+    } catch (const std::exception& e) {
+      response.success = false;
+      response.message = e.what();
+    }
+  }
+
+  arm_control::HardwareBackend* inactive_hardware(std::string& error) {
+    if (get_current_state().id() !=
+        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+      error = "operator motion requires inactive lifecycle state";
+      return nullptr;
+    }
+    auto* hardware =
+        dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
+    if (hardware == nullptr) {
+      error = "operator motion requires configured hardware";
+    }
+    return hardware;
+  }
+
+  void home_arm(std_srvs::srv::Trigger::Response& response) {
+    auto* hardware = inactive_hardware(response.message);
+    if (hardware == nullptr) {
+      response.success = false;
+      return;
+    }
+    try {
+      hardware->move_to_operator(
+          Eigen::VectorXd::Zero(arm_control::kDof),
+          get_parameter("hardware.home_duration").as_double());
+      response.success = true;
+      response.message = "arm homed";
+    } catch (const std::exception& e) {
+      response.success = false;
+      response.message = e.what();
+    }
+  }
+
+  void move_arm(const arm_msgs::srv::MoveArm::Request& request,
+                arm_msgs::srv::MoveArm::Response& response) {
+    auto* hardware = inactive_hardware(response.message);
+    if (hardware == nullptr) {
+      response.success = false;
+      return;
+    }
+    Eigen::VectorXd command = Eigen::VectorXd::Zero(arm_control::kDof);
+    for (int joint = 0; joint < kArmJoints; ++joint) {
+      command[joint] = request.position[static_cast<size_t>(joint)];
+    }
+    try {
+      hardware->move_to_operator(command, request.duration);
+      response.success = true;
+      response.message = "arm move complete";
     } catch (const std::exception& e) {
       response.success = false;
       response.message = e.what();
@@ -1333,6 +1392,8 @@ private:
   rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::TimerBase::SharedPtr fault_action_timer_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr gripper_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr home_service_;
+  rclcpp::Service<arm_msgs::srv::MoveArm>::SharedPtr move_service_;
 
   // param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;
