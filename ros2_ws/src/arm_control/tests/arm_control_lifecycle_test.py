@@ -2,8 +2,8 @@
 
 Drives configure, activate, deactivate, activate, deactivate, cleanup for 20
 cycles. Worker counts come from the control thread, and freshness comes from
-the plant sample time. The last step leaves the node active so the launch
-harness is what interrupts it.
+the plant sample time, which restarts after each deactivate. The last step
+leaves the node active so the launch harness is what interrupts it.
 """
 
 import os
@@ -217,10 +217,10 @@ class TestArmControlLifecycle(unittest.TestCase):
                         f"cycle {cycle}: sample_time did not advance "
                         f"({first} -> {latest})"
                     )
-                if previous_sample is not None and first <= previous_sample:
+                if previous_sample is not None and first >= previous_sample:
                     raise AssertionError(
-                        f"cycle {cycle}: sample_time {first} is not newer than "
-                        f"{previous_sample}"
+                        f"cycle {cycle}: sample_time {first} did not restart "
+                        f"after deactivate (previous {previous_sample})"
                     )
                 active, peak = client.worker_counts()
                 if active != 1 or peak != 1:

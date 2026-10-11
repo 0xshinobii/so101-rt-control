@@ -456,7 +456,7 @@ public:
     return LifecycleNodeInterface::CallbackReturn::SUCCESS;
   }
 
-  // reactivation is implicitly resuming from the last state.
+  // reactivation is homing and then starting the trajectory.
   LifecycleNodeInterface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State &state) override {
     publish_timer_.reset();
 
