@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -29,12 +30,14 @@
 #include <lifecycle_msgs/msg/transition.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 #include "arm_control/adaptive_computed_torque_controller.hpp"
 #include "arm_control/arm_types.hpp"
 #include "arm_control/computed_torque_controller.hpp"
 #include "arm_control/control_loop.hpp"
 #include "arm_control/controller.hpp"
+#include "arm_control/experiment_recorder.hpp"
 #include "arm_control/mujoco_backend.hpp"
 #include "arm_control/feetech_bus.hpp"
 #include "arm_control/hardware_backend.hpp"
@@ -220,6 +223,11 @@ public:
       declare_parameter<int>("max_workers", 0);
     }
     jitter_csv_ = declare_parameter<std::string>("jitter_csv", "");
+    declare_parameter<double>("experiment.duration_s", 4.0);
+    declare_parameter<double>("experiment.settle_time_s", 1.5);
+    declare_parameter<std::string>("experiment.output_directory",
+                                   "experiment_logs");
+    declare_parameter<double>("experiment.payload_g", -1.0);
     const auto kp = declare_parameter<std::vector<double>>(
         "kp", is_sim
         ? std::vector<double>{40.0, 40.0, 25.0, 15.0, 8.0, 5.0}
@@ -274,6 +282,13 @@ public:
 
     // register the post-set parameters callback
     post_set_parameters_callback_ = add_post_set_parameters_callback([this](const std::vector<rclcpp::Parameter> &parameters) { return on_post_set_parameters_callback(parameters); });
+
+    gripper_service_ = create_service<std_srvs::srv::SetBool>(
+        "~/set_gripper",
+        [this](const std_srvs::srv::SetBool::Request::SharedPtr request,
+               std_srvs::srv::SetBool::Response::SharedPtr response) {
+          set_gripper(request->data, *response);
+        });
   }
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
@@ -382,6 +397,10 @@ public:
 
       target_ = std::move(target);
       target_eigen_ = std::move(target_eigen);
+      urdf_path_ = urdf_path;
+      payload_urdf_path_ = payload_urdf_path;
+      arm_control::PinocchioDynamics target_kinematics(urdf_path);
+      target_ee_ = target_kinematics.ee_position(target_eigen_);
       q_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
       qdot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
       qddot_ref_ = Eigen::VectorXd::Zero(arm_control::kDof);
@@ -441,6 +460,7 @@ public:
     }
 
     try {
+      prepare_experiment();
       auto result = LifecycleNode::on_activate(state);
       if (result != LifecycleNodeInterface::CallbackReturn::SUCCESS) {
         return result;
@@ -452,6 +472,7 @@ public:
         drain_and_publish();
         log_dropped_samples();
         log_worker_fault();
+        finalize_completed_experiment();
       });
       // --- start the control thread (this is the fixed-rate loop) ---
       dropped_count_.store(0, std::memory_order_relaxed);
@@ -459,6 +480,16 @@ public:
       max_workers_.store(0, std::memory_order_relaxed);
       running_.store(true, std::memory_order_release);
       loop_->reset();
+      if (auto* hardware =
+              dynamic_cast<arm_control::HardwareBackend*>(plant_.get())) {
+        hardware->reset_health();
+      }
+      ++activation_count_;
+      experiment_started_unix_ms_ =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch())
+              .count();
+      experiment_pending_ = true;
       control_thread_ = std::thread([this]() { control_loop(); });
     } catch (const std::exception& e) {
       running_.store(false, std::memory_order_release);
@@ -489,6 +520,15 @@ public:
     }
     mirror_worker_counters();
     mirror_test_bus_stats();
+    if (experiment_pending_) {
+      try {
+        capture_experiment_snapshot();
+        write_experiment_log();
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Failed to save experiment: %s", e.what());
+      }
+      experiment_pending_ = false;
+    }
     // discard the ring so that its empty for the next activation
     arm_control::Sample s;
     while (ring_.pop(s)) { /* do nothing */ }
@@ -727,6 +767,7 @@ private:
           loop_->set_reference(q_ref_, qdot_ref_, qddot_ref_);
         }
         loop_->step_once(s);
+        const bool experiment_finished = experiment_recorder_.record(s);
         if (!ring_.push(s)) {
           dropped_count_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -751,6 +792,10 @@ private:
           loop_late_ns[jitter_n] = loop_late;
           wake_late_ns[jitter_n] = wake_late;
           ++jitter_n;
+        }
+        if (experiment_finished) {
+          capture_experiment_snapshot();
+          experiment_ready_to_save_.store(true, std::memory_order_release);
         }
       }
 
@@ -867,6 +912,98 @@ private:
     }
   }
 
+  void prepare_experiment() {
+    arm_control::ExperimentRecorder::Config config;
+    config.duration_s = get_parameter("experiment.duration_s").as_double();
+    config.settle_time_s =
+        get_parameter("experiment.settle_time_s").as_double();
+    config.output_directory =
+        get_parameter("experiment.output_directory").as_string();
+    config.payload_g = get_parameter("experiment.payload_g").as_double();
+    config.rate_hz = rate_hz_;
+    std::copy(target_.begin(), target_.end(), config.target.begin());
+    std::copy(target_ee_.data(), target_ee_.data() + 3,
+              config.target_ee.begin());
+    experiment_recorder_.prepare(std::move(config));
+    experiment_ready_to_save_.store(false, std::memory_order_relaxed);
+  }
+
+  // Called by the control thread at the final recorded sample, or after that
+  // thread has joined during an early manual deactivation.
+  void capture_experiment_snapshot() {
+    experiment_compensated_mass_ =
+        std::numeric_limits<double>::quiet_NaN();
+    if (const auto* adaptive =
+            dynamic_cast<const arm_control::AdaptiveComputedTorqueController*>(
+                controller_.get())) {
+      experiment_compensated_mass_ = adaptive->compensated_payload_mass();
+    }
+    experiment_health_ = {};
+    if (const auto* hardware =
+            dynamic_cast<const arm_control::HardwareBackend*>(plant_.get())) {
+      const auto source = hardware->health();
+      experiment_health_ = {
+          source.stale_reads,       source.failed_writes,
+          source.tick_clamps,       source.lead_saturations,
+          source.late_ticks,        source.max_late_us,
+          source.bus_timeouts,      source.bus_checksum_errors,
+          source.torque_off_failures};
+    }
+  }
+
+  void finalize_completed_experiment() {
+    if (!experiment_pending_ ||
+        !experiment_ready_to_save_.exchange(false,
+                                            std::memory_order_acq_rel)) {
+      return;
+    }
+    try {
+      write_experiment_log();
+      experiment_pending_ = false;
+      RCLCPP_INFO(get_logger(),
+                  "Experiment duration reached; recording stopped, node remains active");
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_logger(), "Failed to save completed experiment: %s",
+                   e.what());
+    }
+  }
+
+  void write_experiment_log() {
+    const auto result = experiment_recorder_.save(
+        get_parameter("controller_type").as_string(), activation_count_,
+        experiment_started_unix_ms_, experiment_compensated_mass_,
+        experiment_health_);
+    RCLCPP_INFO(get_logger(),
+                "Saved experiment %s: RMS=%.6f rad EE miss=%.6f m mass=%.4f kg",
+                result.csv_path.c_str(), result.arm_rms, result.ee_miss,
+                result.compensated_mass);
+  }
+
+  void set_gripper(bool closed,
+                   std_srvs::srv::SetBool::Response& response) {
+    if (get_current_state().id() !=
+        lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+      response.success = false;
+      response.message = "gripper command requires inactive lifecycle state";
+      return;
+    }
+    auto* hardware =
+        dynamic_cast<arm_control::HardwareBackend*>(plant_.get());
+    if (hardware == nullptr) {
+      response.success = false;
+      response.message = "gripper command requires configured hardware";
+      return;
+    }
+    try {
+      hardware->set_gripper_closed(closed);
+      response.success = true;
+      response.message = closed ? "gripper closed" : "gripper opened";
+    } catch (const std::exception& e) {
+      response.success = false;
+      response.message = e.what();
+    }
+  }
+
   void release_configured_resources() {
     loop_.reset();
     controller_.reset();
@@ -880,6 +1017,9 @@ private:
     metrics_pub_.reset();
     publish_timer_.reset();
     fault_action_timer_.reset();
+    experiment_recorder_.clear();
+    experiment_ready_to_save_.store(false, std::memory_order_relaxed);
+    experiment_pending_ = false;
     worker_failed_.store(false, std::memory_order_relaxed);
     worker_fault_logged_ = false;
     worker_error_.clear();
@@ -939,6 +1079,13 @@ private:
     std::vector<double> current_kp = get_parameter("kp").get_value<std::vector<double>>();
     std::vector<double> current_kd = get_parameter("kd").get_value<std::vector<double>>();
     for (const auto &param : parameters) {
+      if (param.get_name().rfind("experiment.", 0) == 0 &&
+          get_current_state().id() ==
+              lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+        result.successful = false;
+        result.reason = "experiment parameters cannot change while active";
+        break;
+      }
       if (!unconfigured && frozen_while_configured(param.get_name())) {
         result.successful = false;
         result.reason = param.get_name() + " cannot change while configured";
@@ -992,11 +1139,22 @@ private:
         break;
       }
 
-      // param controller_type is only allowed to be set when node is unconfigured
+      // Rebuilds the controller in-place while inactive, preserving the
+      // configured hardware backend and its gripper hold.
       if (param.get_name() == "controller_type") {
-        if (get_current_state().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED) {
+        const auto state = get_current_state().id();
+        if (state != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED &&
+            state != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
           result.successful = false;
-          result.reason = "Controller type is only allowed to be set when node is unconfigured";
+          result.reason =
+              "controller_type can change only while unconfigured or inactive";
+          break;
+        }
+        const std::string type = param.as_string();
+        if (type != "pd" && type != "computed_torque" &&
+            type != "adaptive_computed_torque") {
+          result.successful = false;
+          result.reason = "invalid controller_type";
           break;
         }
       }
@@ -1006,10 +1164,14 @@ private:
 
   void on_post_set_parameters_callback(const std::vector<rclcpp::Parameter> &parameters) {
     bool injection_changed = false;
+    bool controller_changed = false;
     for (const auto &param : parameters) {
       if (param.get_name() == "test_bus.injection_mode" ||
           param.get_name() == "test_bus.failure_limit") {
         injection_changed = true;
+      }
+      if (param.get_name() == "controller_type") {
+        controller_changed = true;
       }
       if (param.get_name() != "kp" && param.get_name() != "kd") {
         continue;
@@ -1037,6 +1199,56 @@ private:
                 get_parameter("test_bus.failure_limit").as_int()));
       }
     }
+    if (controller_changed && plant_ != nullptr &&
+        get_current_state().id() ==
+            lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+      try {
+        rebuild_controller();
+        RCLCPP_INFO(get_logger(), "Controller changed to %s",
+                    get_parameter("controller_type").as_string().c_str());
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Failed to rebuild controller: %s", e.what());
+      }
+    }
+  }
+
+  void rebuild_controller() {
+    const std::string controller_type =
+        get_parameter("controller_type").as_string();
+    std::unique_ptr<arm_control::Controller> replacement;
+    if (controller_type == "pd") {
+      replacement = std::make_unique<arm_control::PdController>(
+          to_eigen(get_parameter("kp").as_double_array()),
+          to_eigen(get_parameter("kd").as_double_array()));
+    } else if (controller_type == "computed_torque") {
+      replacement = std::make_unique<arm_control::ComputedTorqueController>(
+          urdf_path_, to_eigen(get_parameter("computed_kp").as_double_array()),
+          to_eigen(get_parameter("computed_kd").as_double_array()));
+    } else if (controller_type == "adaptive_computed_torque") {
+      arm_control::PayloadMassRlsEstimator::Config estimator_config;
+      estimator_config.initial_mass =
+          get_parameter("rls_initial_mass").as_double();
+      estimator_config.initial_covariance =
+          get_parameter("rls_initial_covariance").as_double();
+      estimator_config.forgetting_factor =
+          get_parameter("rls_forgetting_factor").as_double();
+      estimator_config.max_mass = get_parameter("rls_max_mass").as_double();
+      estimator_config.excitation_threshold =
+          get_parameter("rls_excitation_threshold").as_double();
+      replacement =
+          std::make_unique<arm_control::AdaptiveComputedTorqueController>(
+              urdf_path_, payload_urdf_path_,
+              get_parameter("reference_payload_mass").as_double(),
+              to_eigen(get_parameter("computed_kp").as_double_array()),
+              to_eigen(get_parameter("computed_kd").as_double_array()),
+              plant_->timestep(), estimator_config);
+    } else {
+      throw std::invalid_argument("invalid controller_type");
+    }
+    auto replacement_loop = std::make_unique<arm_control::ControlLoop>(
+        *plant_, *replacement, target_eigen_);
+    controller_ = std::move(replacement);
+    loop_ = std::move(replacement_loop);
   }
 
   inline void declare_hardware_parameters() {
@@ -1078,10 +1290,13 @@ private:
   std::unique_ptr<arm_control::ControlLoop> loop_;
   std::vector<double> target_;
   std::string reference_type_;
+  std::string urdf_path_;
+  std::string payload_urdf_path_;
   Eigen::VectorXd target_eigen_;
   Eigen::VectorXd q_ref_;
   Eigen::VectorXd qdot_ref_;
   Eigen::VectorXd qddot_ref_;
+  Eigen::Vector3d target_ee_ = Eigen::Vector3d::Zero();
   double rate_hz_ = 200.0;
   bool rt_enable_ = true;
   int rt_priority_ = 80;
@@ -1102,11 +1317,22 @@ private:
   int previous_dropped_count_ = 0;
   bool worker_counters_ = false;
 
+  // One preallocated, full-rate log per lifecycle activation.
+  arm_control::ExperimentRecorder experiment_recorder_;
+  arm_control::ExperimentHealth experiment_health_;
+  std::atomic<bool> experiment_ready_to_save_{false};
+  double experiment_compensated_mass_ =
+      std::numeric_limits<double>::quiet_NaN();
+  uint64_t activation_count_ = 0;
+  int64_t experiment_started_unix_ms_ = 0;
+  bool experiment_pending_ = false;
+
   // ROS side.
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
   rclcpp_lifecycle::LifecyclePublisher<arm_msgs::msg::ArmMetrics>::SharedPtr metrics_pub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::TimerBase::SharedPtr fault_action_timer_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr gripper_service_;
 
   // param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;

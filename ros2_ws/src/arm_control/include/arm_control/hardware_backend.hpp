@@ -57,6 +57,9 @@ public:
   void gravity(const Eigen::VectorXd& q, Eigen::VectorXd& tau) const;
   void move_to(const Eigen::VectorXd& q_end, double duration);
   void set_motion_profile(uint8_t acc, uint16_t speed);
+  // Operator command used while the lifecycle node is inactive. Closing holds
+  // the calibrated minimum tick; opening returns to Config::gripper_q.
+  void set_gripper_closed(bool closed);
   bool read_current_amps(Eigen::VectorXd& amps);
   void current_to_torque(const Eigen::VectorXd& amps,
                          Eigen::VectorXd& tau) const;
@@ -140,6 +143,7 @@ private:
   int read_bus_fails_ = 0;
   int write_bus_fails_ = 0;
   int gripper_hold_tick_ = -1;
+  double gripper_open_q_ = 0.0;
   double t_ = 0.0;
   bool external_time_ = false;
   bool period_armed_ = false;

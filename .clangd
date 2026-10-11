@@ -55,6 +55,7 @@ CompileFlags:
     - "-I/opt/ros/jazzy/include/service_msgs"
     - "-I/opt/ros/jazzy/include/statistics_msgs"
     - "-I/opt/ros/jazzy/include/std_msgs"
+    - "-I/opt/ros/jazzy/include/std_srvs"
     - "-I/opt/ros/jazzy/include/tracetools"
     - "-I/opt/ros/jazzy/include/type_description_interfaces"
     - "-I/opt/ros/jazzy/include/urdfdom"

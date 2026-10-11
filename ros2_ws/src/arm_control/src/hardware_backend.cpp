@@ -54,7 +54,8 @@ HardwareBackend::HardwareBackend(Config cfg,
       qdot_(Eigen::VectorXd::Zero(kDof)),
       q_cmd_(Eigen::VectorXd::Zero(kDof)),
       q_ref_(Eigen::VectorXd::Zero(kDof)),
-      q_new_(Eigen::VectorXd::Zero(kDof)) {
+      q_new_(Eigen::VectorXd::Zero(kDof)),
+      gripper_open_q_(cfg_.gripper_q) {
   if (cfg_.gripper_torque_limit < 1 || cfg_.gripper_torque_limit > 1000) {
     throw std::invalid_argument("gripper_torque_limit must be in [1, 1000]");
   }
@@ -170,6 +171,37 @@ void HardwareBackend::squeeze_gripper() {
     throw std::runtime_error("squeeze: write failed");
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(800));
+}
+
+void HardwareBackend::set_gripper_closed(bool closed) {
+  enable_torque_at_current();
+  set_motion_profile(30, 0);
+  set_torque_limit(1000);
+
+  std::array<int, kDof> ticks{};
+  if (!read_ticks(ticks)) {
+    throw std::runtime_error("set gripper: read failed");
+  }
+  if (closed) {
+    gripper_hold_tick_ = calib_[5].min_ticks;
+    cfg_.gripper_q =
+        calib_[5].sign * (gripper_hold_tick_ - calib_[5].zero_ticks) *
+        kRadPerTick;
+    ticks[5] = gripper_hold_tick_;
+  } else {
+    gripper_hold_tick_ = -1;
+    cfg_.gripper_q = gripper_open_q_;
+    ticks[5] = q_to_tick(5, cfg_.gripper_q);
+  }
+  if (!write_ticks(ticks)) {
+    throw std::runtime_error("set gripper: write failed");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  have_q_ = false;
+  have_q_cmd_ = true;
+  ticks_to_q(ticks, q_cmd_);
+  qdot_.setZero();
+  period_armed_ = false;
 }
 
 void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {

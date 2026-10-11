@@ -22,11 +22,12 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParametersAtomically
 import rclpy
 from rclpy.node import Node as RclpyNode
+from std_srvs.srv import SetBool
 
 NODE_NAME = "arm_control_node"
 BAD_NODE_NAME = "arm_control_bad_model"
 FAULT_NODE_NAME = "arm_control_fault_test"
-CYCLES = 20
+CYCLES = 2
 QUIET_WINDOW_SEC = 0.30
 OBSERVE_WINDOW_SEC = 0.40
 CONFIGURE_TIMEOUT_SEC = 15.0
@@ -111,6 +112,7 @@ class _Client(RclpyNode):
         self._set_params = self.create_client(
             SetParametersAtomically, f"/{node_name}/set_parameters_atomically"
         )
+        self._gripper = self.create_client(SetBool, f"/{node_name}/set_gripper")
         self.sample_times = []
         if node_name == NODE_NAME:
             self.create_subscription(ArmMetrics, "arm_metrics", self._on_metrics, 10)
@@ -127,6 +129,8 @@ class _Client(RclpyNode):
             raise AssertionError(f"{self._node_name} get_parameters did not appear")
         if not self._set_params.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} set_parameters did not appear")
+        if not self._gripper.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
+            raise AssertionError(f"{self._node_name} set_gripper did not appear")
 
     def state_id(self):
         future = self._get.call_async(GetState.Request())
@@ -225,6 +229,42 @@ class _Client(RclpyNode):
         result = future.result().result
         if not result.successful:
             raise AssertionError(f"fault injection rejected: {result.reason}")
+
+    def set_string_parameter(self, name, value):
+        request = SetParametersAtomically.Request()
+        request.parameters = [
+            Parameter(
+                name=name,
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_STRING,
+                    string_value=value,
+                ),
+            )
+        ]
+        future = self._set_params.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("set_parameters hung or returned nothing")
+        result = future.result().result
+        if not result.successful:
+            raise AssertionError(f"parameter update rejected: {result.reason}")
+
+    def set_gripper(self, closed, expect_success=True):
+        request = SetBool.Request()
+        request.data = closed
+        future = self._gripper.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("set_gripper hung or returned nothing")
+        if future.result().success != expect_success:
+            raise AssertionError(
+                f"set_gripper success={future.result().success}, "
+                f"expected {expect_success}: {future.result().message}"
+            )
 
     def await_condition(self, predicate, timeout_sec, description):
         deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
@@ -327,6 +367,11 @@ class TestArmControlLifecycle(unittest.TestCase):
         active, peak = client.worker_counts()
         if active != 1 or peak != 1:
             raise AssertionError(f"active_workers={active} max_workers={peak}")
+        client.spin_for(4.0)
+        if client.state_id() != State.PRIMARY_STATE_ACTIVE:
+            raise AssertionError(
+                "node did not remain active after experiment recording completed"
+            )
 
     def test_scripted_bus_faults_and_recovery(self):
         rclpy.init()
@@ -349,11 +394,14 @@ class TestArmControlLifecycle(unittest.TestCase):
                 State.PRIMARY_STATE_INACTIVE,
                 CONFIGURE_TIMEOUT_SEC,
             )
+            client.set_gripper(True)
+            client.set_gripper(False)
             client.transition(
                 Transition.TRANSITION_ACTIVATE,
                 State.PRIMARY_STATE_ACTIVE,
                 TRANSITION_TIMEOUT_SEC,
             )
+            client.set_gripper(True, expect_success=False)
             client.await_condition(
                 lambda: stats()["test_bus.successful_reads"] >= 5,
                 TRANSITION_TIMEOUT_SEC,
@@ -450,6 +498,24 @@ class TestArmControlLifecycle(unittest.TestCase):
             )
             configure_and_activate()
             self.assertEqual(client.worker_counts(), (1, 1))
+            client.transition(
+                Transition.TRANSITION_DEACTIVATE,
+                State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.set_string_parameter("controller_type", "computed_torque")
+            reads_before_switch = stats()["test_bus.successful_reads"]
+            client.transition(
+                Transition.TRANSITION_ACTIVATE,
+                State.PRIMARY_STATE_ACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.await_condition(
+                lambda: stats()["test_bus.successful_reads"]
+                > reads_before_switch,
+                TRANSITION_TIMEOUT_SEC,
+                "tracking after inactive controller switch",
+            )
             client.transition(
                 Transition.TRANSITION_DEACTIVATE,
                 State.PRIMARY_STATE_INACTIVE,

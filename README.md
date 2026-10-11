@@ -488,6 +488,27 @@ ros2 launch arm_bringup arm_control.launch.py   # SCHED_FIFO needs CAP_SYS_NICE
 ./docker/run_i7.sh
 #   then, inside:
 #   ros2 run arm_control calibrate_so101   # once; writes so101_follower_calib.json
+#   ros2 launch arm_bringup arm_control.hw.launch.py
+#   ros2 lifecycle set /arm_control_node configure
+#
+#   # Gripper commands are accepted only while inactive:
+#   ros2 service call /arm_control_node/set_gripper std_srvs/srv/SetBool \
+#       "{data: false}"                     # open for a payload change
+#   ros2 service call /arm_control_node/set_gripper std_srvs/srv/SetBool \
+#       "{data: true}"                      # close and hold
+#
+#   ros2 param set /arm_control_node experiment.payload_g 180.0
+#   ros2 param set /arm_control_node controller_type pd
+#   ros2 lifecycle set /arm_control_node activate
+#   # Recording stops and saves after experiment.duration_s; control stays active.
+#   ros2 lifecycle set /arm_control_node deactivate
+#   # Then select the next controller without releasing the gripper:
+#   ros2 param set /arm_control_node controller_type computed_torque
+#   ros2 lifecycle set /arm_control_node activate
+#   ros2 param set /arm_control_node controller_type adaptive_computed_torque
+#   ros2 lifecycle set /arm_control_node activate
+#
+# Standalone legacy runner:
 #   ros2 run arm_control hardware_run --controller computed_torque --payload-g 180
 #   ros2 run arm_control hardware_run --controller adaptive_computed_torque \
 #       --payload-g 180 --kt -12.5223 \
