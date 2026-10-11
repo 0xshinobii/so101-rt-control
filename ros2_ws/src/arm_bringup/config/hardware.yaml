@@ -14,7 +14,25 @@ arm_control_node:
       gripper_closed: false
       gripper_torque_limit: 200
       current_lsb_a: 0.0065
-      kt_nm_per_a: [1.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+      kt_nm_per_a: [-12.5223, -12.5223, -12.5223, -12.5223, -12.5223, 0.0]
+      mass_id:
+        # Disabled: these coefficients were fitted to the old one-pose
+        # protocol. Refit with known masses using this six-pose protocol
+        # before enabling.
+        apply_affine_calibration: false
+        raw_mass_scale: 2.31501
+        raw_mass_offset: -0.01229
+        approach_rad: 0.07
+        move_duration_s: 2.0
+        settle_duration_s: 1.2
+        samples: 25
+        sample_period_s: 0.02
+        # One encoder tick at 200 Hz is ~0.307 rad/s, so 0.05 requires no
+        # observed encoder movement for ten consecutive checks.
+        quiet_velocity_threshold_rad_s: 0.05
+        quiet_samples: 10
+        quiet_timeout_s: 3.0
+        home_duration_s: 2.5
       bus:
         rx_timeout_ns: 2500000
         tx_timeout_ns: 750000
@@ -24,8 +42,11 @@ arm_control_node:
         max_lead_q: 0.12
         goal_speed: 40
     reference_payload_mass: 0.20
-    # Used only by controller_type=known_payload_computed_torque.
+    # Manual override, or populated by static ID; hardware adaptive control
+    # freezes this value instead of running acceleration RLS.
     known_payload_mass: -1.0
+    # Written by /arm_control_node/estimate_payload_mass.
+    estimated_payload_mass: -1.0
     # Negative leaves the MJCF payload mass unchanged.
     plant_payload_mass: -1.0
     controller_type: "pd"

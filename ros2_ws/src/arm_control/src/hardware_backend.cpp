@@ -204,6 +204,40 @@ void HardwareBackend::set_gripper_closed(bool closed) {
   period_armed_ = false;
 }
 
+double HardwareBackend::set_gripper_open_percentage(double open_percentage) {
+  if (!std::isfinite(open_percentage) || open_percentage < 0.0 ||
+      open_percentage > 100.0) {
+    throw std::invalid_argument(
+        "gripper open_percentage must be finite and in [0, 100]");
+  }
+  enable_torque_at_current();
+  set_motion_profile(30, 0);
+  set_torque_limit(1000);
+
+  std::array<int, kDof> ticks{};
+  if (!read_ticks(ticks)) {
+    throw std::runtime_error("set gripper opening: read failed");
+  }
+  const auto& gripper = calib_[5];
+  const double fraction = open_percentage / 100.0;
+  gripper_hold_tick_ = static_cast<int>(std::lround(
+      gripper.min_ticks +
+      fraction * static_cast<double>(gripper.max_ticks - gripper.min_ticks)));
+  cfg_.gripper_q =
+      gripper.sign * (gripper_hold_tick_ - gripper.zero_ticks) * kRadPerTick;
+  ticks[5] = gripper_hold_tick_;
+  if (!write_ticks(ticks)) {
+    throw std::runtime_error("set gripper opening: write failed");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  have_q_ = false;
+  have_q_cmd_ = true;
+  ticks_to_q(ticks, q_cmd_);
+  qdot_.setZero();
+  period_armed_ = false;
+  return cfg_.gripper_q;
+}
+
 void HardwareBackend::set_motion_profile(uint8_t acc, uint16_t speed) {
   const uint8_t sp[2] = {static_cast<uint8_t>(speed & 0xFF),
                          static_cast<uint8_t>((speed >> 8) & 0xFF)};

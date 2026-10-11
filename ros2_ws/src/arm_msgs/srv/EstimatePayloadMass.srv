@@ -1,0 +1,5 @@
+---
+bool success
+string message
+float64 raw_mass
+float64 estimated_mass

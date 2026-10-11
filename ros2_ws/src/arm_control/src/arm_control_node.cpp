@@ -45,10 +45,13 @@
 #include "arm_control/pd_controller.hpp"
 #include "arm_control/pinocchio_dynamics.hpp"
 #include "arm_control/so101_calib.hpp"
+#include "arm_control/static_gravity_identifier.hpp"  // six-pose payload ID
 #include "arm_control/rt_thread.hpp"
 #include "arm_control/spsc_ring.hpp"
 #include "arm_msgs/msg/arm_metrics.hpp"
+#include "arm_msgs/srv/estimate_payload_mass.hpp"
 #include "arm_msgs/srv/move_arm.hpp"
+#include "arm_msgs/srv/set_gripper_opening.hpp"  // calibrated opening command
 
 using namespace std::chrono_literals;
 
@@ -130,9 +133,9 @@ bool strictly_positive(const std::vector<double>& v) {
 // Arm joints enter the payload regressor. Gripper current does not, so its
 // kt may be zero under the current calibration convention.
 bool valid_kt(const std::vector<double>& kt) {
-  if (!validate_gains(kt)) return false;
+  if (kt.size() != arm_control::kDof || !all_finite(kt)) return false;
   return std::all_of(kt.begin(), kt.begin() + kArmJoints,
-                     [](double x) { return x > 0.0; });
+                     [](double x) { return x != 0.0; });
 }
 
 bool frozen_while_configured(const std::string& name) {
@@ -211,6 +214,7 @@ public:
     const double reference_payload_mass =
         declare_parameter<double>("reference_payload_mass", 0.20);
     declare_parameter<double>("known_payload_mass", -1.0);
+    declare_parameter<double>("estimated_payload_mass", -1.0);
     const double plant_payload_mass =
         declare_parameter<double>("plant_payload_mass", -1.0);
     reference_type_ =
@@ -292,6 +296,16 @@ public:
                std_srvs::srv::SetBool::Response::SharedPtr response) {
           set_gripper(request->data, *response);
         });
+    gripper_opening_service_ =
+        create_service<arm_msgs::srv::SetGripperOpening>(
+            "~/set_gripper_opening",
+            [this](
+                const arm_msgs::srv::SetGripperOpening::Request::SharedPtr
+                    request,
+                arm_msgs::srv::SetGripperOpening::Response::SharedPtr
+                    response) {
+              set_gripper_opening(request->open_percentage, *response);
+            });
     home_service_ = create_service<std_srvs::srv::Trigger>(
         "~/home_arm",
         [this](const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -304,6 +318,13 @@ public:
                arm_msgs::srv::MoveArm::Response::SharedPtr response) {
           move_arm(*request, *response);
         });
+    estimate_payload_service_ =
+        create_service<arm_msgs::srv::EstimatePayloadMass>(
+            "~/estimate_payload_mass",
+            [this](
+                const arm_msgs::srv::EstimatePayloadMass::Request::SharedPtr,
+                arm_msgs::srv::EstimatePayloadMass::Response::SharedPtr
+                    response) { estimate_payload_mass(*response); });
   }
 
   LifecycleNodeInterface::CallbackReturn on_configure(const rclcpp_lifecycle::State &) override {
@@ -384,13 +405,22 @@ public:
       estimator_config.excitation_threshold = get_parameter("rls_excitation_threshold").get_value<double>();
       const double known_payload_mass =
           get_parameter("known_payload_mass").as_double();
-      if (controller_type == "known_payload_computed_torque" &&
-          (!std::isfinite(known_payload_mass) || known_payload_mass < 0.0 ||
-           known_payload_mass > estimator_config.max_mass)) {
+      if (!std::isfinite(known_payload_mass) ||
+          (known_payload_mass != -1.0 &&
+           (known_payload_mass < 0.0 ||
+            known_payload_mass > estimator_config.max_mass))) {
         throw std::invalid_argument(
-            "known_payload_mass must be in [0, rls_max_mass]");
+            "known_payload_mass must be -1 or in [0, rls_max_mass]");
+      }
+      if (controller_type == "known_payload_computed_torque" &&
+          known_payload_mass < 0.0) {
+        throw std::invalid_argument(
+            "known_payload_mass must be set for known-payload control");
       }
       if (controller_type == "known_payload_computed_torque") {
+        estimator_config.initial_mass = known_payload_mass;
+      } else if (controller_type == "adaptive_computed_torque" && !is_sim &&
+                 known_payload_mass >= 0.0) {
         estimator_config.initial_mass = known_payload_mass;
       }
 
@@ -411,11 +441,16 @@ public:
         known->set_payload_mass(known_payload_mass);
         controller = std::move(known);
       } else if (controller_type == "adaptive_computed_torque") {
-        controller =
+        auto adaptive =
             std::make_unique<arm_control::AdaptiveComputedTorqueController>(
                 urdf_path, payload_urdf_path, reference_payload_mass,
                 to_eigen(computed_kp), to_eigen(computed_kd),
                 plant->timestep(), estimator_config);
+        if (!is_sim && known_payload_mass >= 0.0) {
+          adaptive->set_use_acceleration_rls(false);
+          adaptive->set_payload_mass(known_payload_mass);
+        }
+        controller = std::move(adaptive);
       }
 
       Eigen::VectorXd target_eigen = to_eigen(target);
@@ -731,10 +766,50 @@ private:
                                  .get_value<std::vector<double>>();
     if (!valid_kt(kt_nm_per_a)) {
       throw std::invalid_argument(
-          "hardware.kt_nm_per_a must be six finite, nonnegative values, "
-          "positive on the arm joints used for payload identification");
+          "hardware.kt_nm_per_a must be six finite values, nonzero on the arm "
+          "joints used for payload identification");
     }
     std::copy(kt_nm_per_a.begin(), kt_nm_per_a.end(), cfg.kt_nm_per_a.begin());
+
+    const double mass_scale =
+        get_parameter("hardware.mass_id.raw_mass_scale").as_double();
+    const double mass_offset =
+        get_parameter("hardware.mass_id.raw_mass_offset").as_double();
+    const double approach =
+        get_parameter("hardware.mass_id.approach_rad").as_double();
+    const int samples = get_parameter("hardware.mass_id.samples").as_int();
+    const double quiet_velocity = get_parameter(
+        "hardware.mass_id.quiet_velocity_threshold_rad_s").as_double();
+    const int quiet_samples =
+        get_parameter("hardware.mass_id.quiet_samples").as_int();
+    if (!std::isfinite(mass_scale) || mass_scale <= 0.0 ||
+        !std::isfinite(mass_offset)) {
+      throw std::invalid_argument(
+          "hardware.mass_id affine calibration must be finite with positive scale");
+    }
+    if (!std::isfinite(approach) || approach <= 0.0) {
+      throw std::invalid_argument(
+          "hardware.mass_id.approach_rad must be finite and positive");
+    }
+    if (samples <= 0) {
+      throw std::invalid_argument("hardware.mass_id.samples must be positive");
+    }
+    if (!std::isfinite(quiet_velocity) || quiet_velocity < 0.0 ||
+        quiet_samples <= 0) {
+      throw std::invalid_argument(
+          "hardware.mass_id quietness settings are invalid");
+    }
+    for (const char* name : {"move_duration_s", "settle_duration_s",
+                             "sample_period_s", "quiet_timeout_s",
+                             "home_duration_s"}) {
+      const double value =
+          get_parameter(std::string("hardware.mass_id.") + name).as_double();
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::invalid_argument(
+            std::string("hardware.mass_id.") + name +
+            " must be finite and positive");
+      }
+    }
 
     for (int i = 0; i < arm_control::kDof; ++i) {
       require_in_joint_limits("target", i, target[static_cast<size_t>(i)],
@@ -1033,6 +1108,26 @@ private:
     }
   }
 
+  void set_gripper_opening(
+      double open_percentage,
+      arm_msgs::srv::SetGripperOpening::Response& response) {
+    auto* hardware = inactive_hardware(response.message);
+    if (hardware == nullptr) {
+      response.success = false;
+      return;
+    }
+    try {
+      response.applied_angle =
+          hardware->set_gripper_open_percentage(open_percentage);
+      response.success = true;
+      response.message =
+          "gripper opening set to " + std::to_string(open_percentage) + "%";
+    } catch (const std::exception& e) {
+      response.success = false;
+      response.message = e.what();
+    }
+  }
+
   arm_control::HardwareBackend* inactive_hardware(std::string& error) {
     if (get_current_state().id() !=
         lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
@@ -1080,6 +1175,72 @@ private:
       hardware->move_to_operator(command, request.duration);
       response.success = true;
       response.message = "arm move complete";
+    } catch (const std::exception& e) {
+      response.success = false;
+      response.message = e.what();
+    }
+  }
+
+  void estimate_payload_mass(
+      arm_msgs::srv::EstimatePayloadMass::Response& response) {
+    auto* hardware = inactive_hardware(response.message);
+    if (hardware == nullptr) {
+      response.success = false;
+      return;
+    }
+    try {
+      arm_control::StaticGravityIdentifier::Config config;
+      config.move_duration_s =
+          get_parameter("hardware.mass_id.move_duration_s").as_double();
+      config.settle_duration_s =
+          get_parameter("hardware.mass_id.settle_duration_s").as_double();
+      config.approach_rad =
+          get_parameter("hardware.mass_id.approach_rad").as_double();
+      config.samples = get_parameter("hardware.mass_id.samples").as_int();
+      config.sample_period = std::chrono::milliseconds(
+          static_cast<int64_t>(std::llround(
+              1000.0 *
+              get_parameter("hardware.mass_id.sample_period_s").as_double())));
+      config.quiet_velocity_threshold_rad_s = get_parameter(
+          "hardware.mass_id.quiet_velocity_threshold_rad_s").as_double();
+      config.quiet_samples =
+          get_parameter("hardware.mass_id.quiet_samples").as_int();
+      config.quiet_timeout_s =
+          get_parameter("hardware.mass_id.quiet_timeout_s").as_double();
+      config.reference_payload_mass =
+          get_parameter("reference_payload_mass").as_double();
+      arm_control::StaticGravityIdentifier::Calibration calibration;
+      if (get_parameter("hardware.mass_id.apply_affine_calibration").as_bool()) {
+        calibration.raw_mass_scale =
+            get_parameter("hardware.mass_id.raw_mass_scale").as_double();
+        calibration.raw_mass_offset =
+            get_parameter("hardware.mass_id.raw_mass_offset").as_double();
+      }
+      calibration.max_mass = get_parameter("rls_max_mass").as_double();
+      const arm_control::StaticGravityIdentifier identifier(
+          urdf_path_, payload_urdf_path_, config);
+      const auto result = identifier.identify(*hardware, calibration);
+
+      Eigen::VectorXd home = Eigen::VectorXd::Zero(arm_control::kDof);
+      home[5] = hardware->gripper_q();
+      hardware->move_to(
+          home, get_parameter("hardware.mass_id.home_duration_s").as_double());
+
+      const auto set_result = set_parameters_atomically({
+          rclcpp::Parameter("estimated_payload_mass", result.estimated_mass),
+          rclcpp::Parameter("known_payload_mass", result.estimated_mass),
+      });
+      if (!set_result.successful) {
+        throw std::runtime_error("could not save estimated mass: " +
+                                 set_result.reason);
+      }
+      response.success = true;
+      response.raw_mass = result.raw_mass;
+      response.estimated_mass = result.estimated_mass;
+      response.message = "payload mass identified and saved";
+      RCLCPP_INFO(get_logger(),
+                  "Six-pose static payload ID: raw=%.4f kg calibrated=%.4f kg",
+                  result.raw_mass, result.estimated_mass);
     } catch (const std::exception& e) {
       response.success = false;
       response.message = e.what();
@@ -1239,6 +1400,24 @@ private:
           break;
         }
       }
+      if (param.get_name() == "estimated_payload_mass") {
+        const auto state = get_current_state().id();
+        if (state != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED &&
+            state != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+          result.successful = false;
+          result.reason =
+              "estimated_payload_mass can change only while unconfigured or inactive";
+          break;
+        }
+        const double mass = param.as_double();
+        if (!std::isfinite(mass) || mass < 0.0 ||
+            mass > get_parameter("rls_max_mass").as_double()) {
+          result.successful = false;
+          result.reason =
+              "estimated_payload_mass must be in [0, rls_max_mass]";
+          break;
+        }
+      }
 
       // Rebuilds the controller in-place while inactive, preserving the
       // configured hardware backend and its gripper hold.
@@ -1283,8 +1462,10 @@ private:
         controller_changed = true;
       }
       if (param.get_name() == "known_payload_mass" &&
-          get_parameter("controller_type").as_string() ==
-              "known_payload_computed_torque") {
+          (get_parameter("controller_type").as_string() ==
+               "known_payload_computed_torque" ||
+           get_parameter("controller_type").as_string() ==
+               "adaptive_computed_torque")) {
         controller_changed = true;
       }
       if (param.get_name() != "kp" && param.get_name() != "kd") {
@@ -1359,6 +1540,12 @@ private:
               "known_payload_mass must be in [0, rls_max_mass]");
         }
         estimator_config.initial_mass = known_mass;
+      } else if (
+          dynamic_cast<arm_control::HardwareBackend*>(plant_.get()) != nullptr) {
+        known_mass = get_parameter("known_payload_mass").as_double();
+        if (known_mass >= 0.0) {
+          estimator_config.initial_mass = known_mass;
+        }
       }
       auto model =
           std::make_unique<arm_control::AdaptiveComputedTorqueController>(
@@ -1370,6 +1557,12 @@ private:
       if (controller_type == "known_payload_computed_torque") {
         model->set_use_acceleration_rls(false);
         model->set_payload_mass(known_mass);
+      } else if (
+          dynamic_cast<arm_control::HardwareBackend*>(plant_.get()) != nullptr) {
+        if (known_mass >= 0.0) {
+          model->set_use_acceleration_rls(false);
+          model->set_payload_mass(known_mass);
+        }
       }
       replacement = std::move(model);
     } else {
@@ -1390,10 +1583,25 @@ private:
     declare_parameter<bool>("hardware.gripper_closed", false);
     declare_parameter<int>("hardware.gripper_torque_limit", 200);
     declare_parameter<double>("hardware.current_lsb_a", 0.0065);
-    const auto kt_nm_per_a = declare_parameter<std::vector<double>>("hardware.kt_nm_per_a", {1.0, 1.0, 1.0, 1.0, 1.0, 0.0});
+    const auto kt_nm_per_a = declare_parameter<std::vector<double>>(
+        "hardware.kt_nm_per_a",
+        {-12.5223, -12.5223, -12.5223, -12.5223, -12.5223, 0.0});
     if (!valid_kt(kt_nm_per_a)) {
       throw std::invalid_argument("Invalid kt_nm_per_a gains");
     }
+    declare_parameter<double>("hardware.mass_id.raw_mass_scale", 2.31501);
+    declare_parameter<double>("hardware.mass_id.raw_mass_offset", -0.01229);
+    declare_parameter<bool>("hardware.mass_id.apply_affine_calibration", false);
+    declare_parameter<double>("hardware.mass_id.approach_rad", 0.07);
+    declare_parameter<double>("hardware.mass_id.move_duration_s", 2.0);
+    declare_parameter<double>("hardware.mass_id.settle_duration_s", 1.2);
+    declare_parameter<int>("hardware.mass_id.samples", 25);
+    declare_parameter<double>("hardware.mass_id.sample_period_s", 0.02);
+    declare_parameter<double>(
+        "hardware.mass_id.quiet_velocity_threshold_rad_s", 0.05);
+    declare_parameter<int>("hardware.mass_id.quiet_samples", 10);
+    declare_parameter<double>("hardware.mass_id.quiet_timeout_s", 3.0);
+    declare_parameter<double>("hardware.mass_id.home_duration_s", 2.5);
     declare_parameter<int>("hardware.bus.rx_timeout_ns", 2500000);
     declare_parameter<int>("hardware.bus.tx_timeout_ns", 750000);
     declare_parameter<int>("hardware.bus.max_bus_fails", 3);
@@ -1463,8 +1671,12 @@ private:
   rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::TimerBase::SharedPtr fault_action_timer_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr gripper_service_;
+  rclcpp::Service<arm_msgs::srv::SetGripperOpening>::SharedPtr
+      gripper_opening_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr home_service_;
   rclcpp::Service<arm_msgs::srv::MoveArm>::SharedPtr move_service_;
+  rclcpp::Service<arm_msgs::srv::EstimatePayloadMass>::SharedPtr
+      estimate_payload_service_;
 
   // param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr on_set_parameters_callback_;

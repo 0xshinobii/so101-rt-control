@@ -62,6 +62,9 @@ public:
   // Operator command used while the lifecycle node is inactive. Closing holds
   // the calibrated minimum tick; opening returns to Config::gripper_q.
   void set_gripper_closed(bool closed);
+  // 0% is calibrated min_ticks; 100% is calibrated max_ticks. The selected
+  // position remains held during subsequent arm motion and tracking.
+  double set_gripper_open_percentage(double open_percentage);
   bool read_current_amps(Eigen::VectorXd& amps);
   void current_to_torque(const Eigen::VectorXd& amps,
                          Eigen::VectorXd& tau) const;

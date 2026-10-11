@@ -1,7 +1,8 @@
+# ROS 2 generated headers come from the configured colcon build.
 If:
   PathMatch: (ros2_ws/src/arm_control|tools)/.*
 CompileFlags:
-  CompilationDatabase: None
+  CompilationDatabase: /home/atul/robotics/so101-rt-control/ros2_ws/build/arm_control
   Add:
     - "-std=c++17"
     - "-DSO101_MODEL_DIR=\"/home/atul/robotics/so101-rt-control/models/so101\""

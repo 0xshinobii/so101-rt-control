@@ -1,0 +1,5 @@
+float64 open_percentage
+---
+bool success
+string message
+float64 applied_angle

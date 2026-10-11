@@ -6,11 +6,14 @@ the plant sample time, which restarts after each deactivate. The last step
 leaves the node active so the launch harness is what interrupts it.
 """
 
+import math
 import os
 import unittest
 
 from arm_msgs.msg import ArmMetrics
+from arm_msgs.srv import EstimatePayloadMass
 from arm_msgs.srv import MoveArm
+from arm_msgs.srv import SetGripperOpening
 import launch
 import launch_testing
 import launch_testing.actions
@@ -89,6 +92,13 @@ def generate_test_description():
             "hardware.test_bus": True,
             "hardware.port": "scripted",
             "hardware.home_duration": 0.02,
+            "hardware.mass_id.move_duration_s": 0.001,
+            "hardware.mass_id.settle_duration_s": 0.001,
+            "hardware.mass_id.samples": 1,
+            "hardware.mass_id.sample_period_s": 0.001,
+            "hardware.mass_id.quiet_samples": 2,
+            "hardware.mass_id.quiet_timeout_s": 0.2,
+            "hardware.mass_id.home_duration_s": 0.001,
         }],
     )
     return launch.LaunchDescription([
@@ -114,8 +124,14 @@ class _Client(RclpyNode):
             SetParametersAtomically, f"/{node_name}/set_parameters_atomically"
         )
         self._gripper = self.create_client(SetBool, f"/{node_name}/set_gripper")
+        self._gripper_opening = self.create_client(
+            SetGripperOpening, f"/{node_name}/set_gripper_opening"
+        )
         self._home = self.create_client(Trigger, f"/{node_name}/home_arm")
         self._move = self.create_client(MoveArm, f"/{node_name}/move_arm")
+        self._estimate_payload = self.create_client(
+            EstimatePayloadMass, f"/{node_name}/estimate_payload_mass"
+        )
         self.sample_times = []
         if node_name == NODE_NAME:
             self.create_subscription(ArmMetrics, "arm_metrics", self._on_metrics, 10)
@@ -134,10 +150,22 @@ class _Client(RclpyNode):
             raise AssertionError(f"{self._node_name} set_parameters did not appear")
         if not self._gripper.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} set_gripper did not appear")
+        if not self._gripper_opening.wait_for_service(
+            timeout_sec=CONFIGURE_TIMEOUT_SEC
+        ):
+            raise AssertionError(
+                f"{self._node_name} set_gripper_opening did not appear"
+            )
         if not self._home.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} home_arm did not appear")
         if not self._move.wait_for_service(timeout_sec=CONFIGURE_TIMEOUT_SEC):
             raise AssertionError(f"{self._node_name} move_arm did not appear")
+        if not self._estimate_payload.wait_for_service(
+            timeout_sec=CONFIGURE_TIMEOUT_SEC
+        ):
+            raise AssertionError(
+                f"{self._node_name} estimate_payload_mass did not appear"
+            )
 
     def state_id(self):
         future = self._get.call_async(GetState.Request())
@@ -294,6 +322,22 @@ class _Client(RclpyNode):
                 f"expected {expect_success}: {future.result().message}"
             )
 
+    def set_gripper_opening(self, open_percentage, expect_success=True):
+        request = SetGripperOpening.Request()
+        request.open_percentage = open_percentage
+        future = self._gripper_opening.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("set_gripper_opening hung or returned nothing")
+        if future.result().success != expect_success:
+            raise AssertionError(
+                f"set_gripper_opening success={future.result().success}, "
+                f"expected {expect_success}: {future.result().message}"
+            )
+        return future.result()
+
     def home_arm(self, expect_success=True):
         future = self._home.call_async(Trigger.Request())
         rclpy.spin_until_future_complete(
@@ -322,6 +366,20 @@ class _Client(RclpyNode):
                 f"move_arm success={future.result().success}, "
                 f"expected {expect_success}: {future.result().message}"
             )
+
+    def estimate_payload_mass(self, expect_success=True):
+        future = self._estimate_payload.call_async(EstimatePayloadMass.Request())
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=CONFIGURE_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("estimate_payload_mass hung or returned nothing")
+        if future.result().success != expect_success:
+            raise AssertionError(
+                f"estimate_payload_mass success={future.result().success}, "
+                f"expected {expect_success}: {future.result().message}"
+            )
+        return future.result()
 
     def await_condition(self, predicate, timeout_sec, description):
         deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=timeout_sec)
@@ -453,16 +511,24 @@ class TestArmControlLifecycle(unittest.TestCase):
             )
             client.set_gripper(True)
             client.set_gripper(False)
+            opening = client.set_gripper_opening(50.0)
+            self.assertTrue(math.isfinite(opening.applied_angle))
+            client.set_gripper_opening(-1.0, expect_success=False)
             client.home_arm()
             client.move_arm([0.05, 0.05, -0.05, 0.05, 0.05], 0.02)
+            estimate = client.estimate_payload_mass()
+            self.assertGreaterEqual(estimate.estimated_mass, 0.0)
+            self.assertLessEqual(estimate.estimated_mass, 0.5)
             client.transition(
                 Transition.TRANSITION_ACTIVATE,
                 State.PRIMARY_STATE_ACTIVE,
                 TRANSITION_TIMEOUT_SEC,
             )
             client.set_gripper(True, expect_success=False)
+            client.set_gripper_opening(50.0, expect_success=False)
             client.home_arm(expect_success=False)
             client.move_arm([0.0] * 5, 0.02, expect_success=False)
+            client.estimate_payload_mass(expect_success=False)
             client.await_condition(
                 lambda: stats()["test_bus.successful_reads"] >= 5,
                 TRANSITION_TIMEOUT_SEC,

@@ -496,11 +496,21 @@ ros2 launch arm_bringup arm_control.launch.py   # SCHED_FIFO needs CAP_SYS_NICE
 #       "{data: false}"                     # open for a payload change
 #   ros2 service call /arm_control_node/set_gripper std_srvs/srv/SetBool \
 #       "{data: true}"                      # close and hold
+#   # Or command a calibrated opening: 0% = min_ticks, 100% = max_ticks.
+#   ros2 service call /arm_control_node/set_gripper_opening \
+#       arm_msgs/srv/SetGripperOpening "{open_percentage: 50.0}"
 #
 #   # Arm motion commands are also inactive-only; gripper hold is preserved:
 #   ros2 service call /arm_control_node/home_arm std_srvs/srv/Trigger "{}"
 #   ros2 service call /arm_control_node/move_arm arm_msgs/srv/MoveArm \
 #       "{position: [0.3, 0.4, -0.5, 0.2, 0.1], duration: 2.0}"
+#
+#   # Identify across six separated poses with two-way static holds and a
+#   # measured-velocity quietness gate. The old one-pose affine fit is disabled
+#   # until it is refitted with known masses under this exact protocol. The
+#   # current raw result is saved as estimated_payload_mass and known_payload_mass.
+#   ros2 service call /arm_control_node/estimate_payload_mass \
+#       arm_msgs/srv/EstimatePayloadMass "{}"
 #
 #   ros2 param set /arm_control_node experiment.payload_g 180.0
 #   ros2 param set /arm_control_node controller_type pd
@@ -510,7 +520,13 @@ ros2 launch arm_bringup arm_control.launch.py   # SCHED_FIFO needs CAP_SYS_NICE
 #   # Then select the next controller without releasing the gripper:
 #   ros2 param set /arm_control_node controller_type computed_torque
 #   ros2 lifecycle set /arm_control_node activate
+#   # Known-mass CT (set mass first; no RLS updates):
+#   ros2 param set /arm_control_node known_payload_mass 0.180
+#   ros2 param set /arm_control_node controller_type known_payload_computed_torque
+#   ros2 lifecycle set /arm_control_node activate
 #   ros2 param set /arm_control_node controller_type adaptive_computed_torque
+#   # On hardware, adaptive control now freezes the mass saved by the service;
+#   # it does not run encoder-acceleration RLS when known_payload_mass is set.
 #   ros2 lifecycle set /arm_control_node activate
 #
 # Standalone legacy runner:
