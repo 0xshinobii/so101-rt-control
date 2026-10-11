@@ -210,6 +210,7 @@ public:
         "models/so101/so101_dynamics_payload.urdf");
     const double reference_payload_mass =
         declare_parameter<double>("reference_payload_mass", 0.20);
+    declare_parameter<double>("known_payload_mass", -1.0);
     const double plant_payload_mass =
         declare_parameter<double>("plant_payload_mass", -1.0);
     reference_type_ =
@@ -337,7 +338,9 @@ public:
       }
 
       const std::string controller_type = get_parameter("controller_type").get_value<std::string>();
-      if (controller_type != "pd" && controller_type != "computed_torque" && controller_type != "adaptive_computed_torque") {
+      if (controller_type != "pd" && controller_type != "computed_torque" &&
+          controller_type != "known_payload_computed_torque" &&
+          controller_type != "adaptive_computed_torque") {
         throw std::invalid_argument("Invalid controller type: " + controller_type);
       }
 
@@ -379,6 +382,17 @@ public:
       estimator_config.forgetting_factor = get_parameter("rls_forgetting_factor").get_value<double>();
       estimator_config.max_mass = get_parameter("rls_max_mass").get_value<double>();
       estimator_config.excitation_threshold = get_parameter("rls_excitation_threshold").get_value<double>();
+      const double known_payload_mass =
+          get_parameter("known_payload_mass").as_double();
+      if (controller_type == "known_payload_computed_torque" &&
+          (!std::isfinite(known_payload_mass) || known_payload_mass < 0.0 ||
+           known_payload_mass > estimator_config.max_mass)) {
+        throw std::invalid_argument(
+            "known_payload_mass must be in [0, rls_max_mass]");
+      }
+      if (controller_type == "known_payload_computed_torque") {
+        estimator_config.initial_mass = known_payload_mass;
+      }
 
       std::unique_ptr<arm_control::Controller> controller;
       if (controller_type == "pd") {
@@ -387,6 +401,15 @@ public:
       } else if (controller_type == "computed_torque") {
         controller = std::make_unique<arm_control::ComputedTorqueController>(
             urdf_path, to_eigen(computed_kp), to_eigen(computed_kd));
+      } else if (controller_type == "known_payload_computed_torque") {
+        auto known =
+            std::make_unique<arm_control::AdaptiveComputedTorqueController>(
+                urdf_path, payload_urdf_path, reference_payload_mass,
+                to_eigen(computed_kp), to_eigen(computed_kd),
+                plant->timestep(), estimator_config);
+        known->set_use_acceleration_rls(false);
+        known->set_payload_mass(known_payload_mass);
+        controller = std::move(known);
       } else if (controller_type == "adaptive_computed_torque") {
         controller =
             std::make_unique<arm_control::AdaptiveComputedTorqueController>(
@@ -1198,6 +1221,25 @@ private:
         break;
       }
 
+      if (param.get_name() == "known_payload_mass") {
+        const auto state = get_current_state().id();
+        if (state != lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED &&
+            state != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
+          result.successful = false;
+          result.reason =
+              "known_payload_mass can change only while unconfigured or inactive";
+          break;
+        }
+        const double mass = param.as_double();
+        if (!std::isfinite(mass) || mass < 0.0 ||
+            mass > get_parameter("rls_max_mass").as_double()) {
+          result.successful = false;
+          result.reason =
+              "known_payload_mass must be in [0, rls_max_mass]";
+          break;
+        }
+      }
+
       // Rebuilds the controller in-place while inactive, preserving the
       // configured hardware backend and its gripper hold.
       if (param.get_name() == "controller_type") {
@@ -1211,9 +1253,17 @@ private:
         }
         const std::string type = param.as_string();
         if (type != "pd" && type != "computed_torque" &&
+            type != "known_payload_computed_torque" &&
             type != "adaptive_computed_torque") {
           result.successful = false;
           result.reason = "invalid controller_type";
+          break;
+        }
+        if (type == "known_payload_computed_torque" &&
+            get_parameter("known_payload_mass").as_double() < 0.0) {
+          result.successful = false;
+          result.reason =
+              "set known_payload_mass before selecting known-payload control";
           break;
         }
       }
@@ -1230,6 +1280,11 @@ private:
         injection_changed = true;
       }
       if (param.get_name() == "controller_type") {
+        controller_changed = true;
+      }
+      if (param.get_name() == "known_payload_mass" &&
+          get_parameter("controller_type").as_string() ==
+              "known_payload_computed_torque") {
         controller_changed = true;
       }
       if (param.get_name() != "kp" && param.get_name() != "kd") {
@@ -1283,7 +1338,8 @@ private:
       replacement = std::make_unique<arm_control::ComputedTorqueController>(
           urdf_path_, to_eigen(get_parameter("computed_kp").as_double_array()),
           to_eigen(get_parameter("computed_kd").as_double_array()));
-    } else if (controller_type == "adaptive_computed_torque") {
+    } else if (controller_type == "known_payload_computed_torque" ||
+               controller_type == "adaptive_computed_torque") {
       arm_control::PayloadMassRlsEstimator::Config estimator_config;
       estimator_config.initial_mass =
           get_parameter("rls_initial_mass").as_double();
@@ -1294,13 +1350,28 @@ private:
       estimator_config.max_mass = get_parameter("rls_max_mass").as_double();
       estimator_config.excitation_threshold =
           get_parameter("rls_excitation_threshold").as_double();
-      replacement =
+      double known_mass = -1.0;
+      if (controller_type == "known_payload_computed_torque") {
+        known_mass = get_parameter("known_payload_mass").as_double();
+        if (!std::isfinite(known_mass) || known_mass < 0.0 ||
+            known_mass > estimator_config.max_mass) {
+          throw std::invalid_argument(
+              "known_payload_mass must be in [0, rls_max_mass]");
+        }
+        estimator_config.initial_mass = known_mass;
+      }
+      auto model =
           std::make_unique<arm_control::AdaptiveComputedTorqueController>(
               urdf_path_, payload_urdf_path_,
               get_parameter("reference_payload_mass").as_double(),
               to_eigen(get_parameter("computed_kp").as_double_array()),
               to_eigen(get_parameter("computed_kd").as_double_array()),
               plant_->timestep(), estimator_config);
+      if (controller_type == "known_payload_computed_torque") {
+        model->set_use_acceleration_rls(false);
+        model->set_payload_mass(known_mass);
+      }
+      replacement = std::move(model);
     } else {
       throw std::invalid_argument("invalid controller_type");
     }

@@ -258,6 +258,27 @@ class _Client(RclpyNode):
         if not result.successful:
             raise AssertionError(f"parameter update rejected: {result.reason}")
 
+    def set_double_parameter(self, name, value):
+        request = SetParametersAtomically.Request()
+        request.parameters = [
+            Parameter(
+                name=name,
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    double_value=value,
+                ),
+            )
+        ]
+        future = self._set_params.call_async(request)
+        rclpy.spin_until_future_complete(
+            self, future, timeout_sec=TRANSITION_TIMEOUT_SEC
+        )
+        if not future.done() or future.result() is None:
+            raise AssertionError("set_parameters hung or returned nothing")
+        result = future.result().result
+        if not result.successful:
+            raise AssertionError(f"parameter update rejected: {result.reason}")
+
     def set_gripper(self, closed, expect_success=True):
         request = SetBool.Request()
         request.data = closed
@@ -555,6 +576,27 @@ class TestArmControlLifecycle(unittest.TestCase):
                 > reads_before_switch,
                 TRANSITION_TIMEOUT_SEC,
                 "tracking after inactive controller switch",
+            )
+            client.transition(
+                Transition.TRANSITION_DEACTIVATE,
+                State.PRIMARY_STATE_INACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.set_double_parameter("known_payload_mass", 0.18)
+            client.set_string_parameter(
+                "controller_type", "known_payload_computed_torque"
+            )
+            reads_before_known_mass = stats()["test_bus.successful_reads"]
+            client.transition(
+                Transition.TRANSITION_ACTIVATE,
+                State.PRIMARY_STATE_ACTIVE,
+                TRANSITION_TIMEOUT_SEC,
+            )
+            client.await_condition(
+                lambda: stats()["test_bus.successful_reads"]
+                > reads_before_known_mass,
+                TRANSITION_TIMEOUT_SEC,
+                "tracking with known payload mass",
             )
             client.transition(
                 Transition.TRANSITION_DEACTIVATE,
